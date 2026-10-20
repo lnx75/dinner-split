@@ -1,0 +1,20 @@
+# Only the runtime sources below enter the image build context.
+**
+!Dockerfile
+!package.json
+!server.mjs
+!auth.mjs
+!public/
+!public/**
+!scripts/
+!scripts/**
+
+# Keep local artifacts excluded even when nested under an allowed directory.
+**/.DS_Store
+**/.git
+**/.git/**
+**/.env
+**/.env.*
+**/*.log
+**/*.pem
+**/*.key

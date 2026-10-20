@@ -1,0 +1,32 @@
+services:
+  app:
+    image: ${DINNER_SPLIT_IMAGE:-dinner-split:1.1.3}
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DATA_DIR: /app/data
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:3000}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set a private ADMIN_PASSWORD of 12 to 256 characters in .env before starting}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    volumes:
+      - dinner-data:/app/data
+      - dinner-backups:/app/backups
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    stop_grace_period: 15s
+
+volumes:
+  dinner-data:
+  dinner-backups:
