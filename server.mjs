@@ -63,6 +63,7 @@ async function seedState(initialAdminPassword) {
   return {
     version: 1,
     ledgerSchemaVersion: 2,
+    simpleLedgerVersion: 1,
     content: normalizeContent(),
     members: [],
     expenses: [],
@@ -294,15 +295,6 @@ export function validGathering(value) {
     typeof value.name === 'string' && value.name.trim().length > 0 && value.name.length <= 80 && validDate(value.date) &&
     ['open', 'finalized'].includes(value.status) && typeof value.createdAt === 'string' && Number.isFinite(Date.parse(value.createdAt)) &&
     (value.status === 'open' ? value.finalizedAt === null : typeof value.finalizedAt === 'string' && Number.isFinite(Date.parse(value.finalizedAt)));
-}
-
-function gatheringDetail(current, archived = false) {
-  return archived ? { gathering: current.gathering, members: current.members, expenses: current.expenses, advances: current.advances, version: current.version } :
-    { gathering: current.currentGathering, members: current.members, expenses: current.expenses, advances: current.advances, version: current.version };
-}
-
-function gatheringSummary(detail, archived) {
-  return { ...detail.gathering, archived, totalCents: calculateLedger(detail).totalCents, memberCount: detail.members.length, expenseCount: detail.expenses.length };
 }
 
 function requirePassword(value) {
@@ -539,6 +531,16 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
       gatheringIds.add(saved.gathering.id);
       calculateLedger(saved);
     }
+    // Keep legacy snapshots private for compatibility, without exposing archive
+    // workflows. Existing finalized ledgers become editable during this migration.
+    if (state.simpleLedgerVersion !== 1) {
+      if (state.currentGathering.status === 'finalized') {
+        state.currentGathering.status = 'open';
+        state.currentGathering.finalizedAt = null;
+      }
+      state.simpleLedgerVersion = 1;
+      upgraded = true;
+    }
     calculateLedger(state);
     if (upgraded) await persist(state);
   } catch (error) {
@@ -619,15 +621,11 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
   function participants(expense, current) {
     return expense.participantIds.map(id => current.members.find(member => member.id === id)?.name || '已删除成员').join('、') || '无';
   }
-  function checkVersion(body, current, { allowFinalized = false } = {}) {
+  function checkVersion(body, current) {
     if (!Number.isSafeInteger(body.version)) throw new ApiError(422, 'validation_error', '请提交当前数据版本。');
-    if (!allowFinalized) requireLedgerOpen(current);
     if (body.version !== current.version) {
       throw new ApiError(409, 'version_conflict', '数据已被其他人修改，已为你载入最新数据，请重新操作。', { state: publicState(current) });
     }
-  }
-  function requireLedgerOpen(current) {
-    if (current.currentGathering.status === 'finalized') throw new ApiError(409, 'gathering_finalized', '这次聚餐已定稿，请管理员重新开启后再修改。', { state: publicState(current) });
   }
   function send(response, status, data, extraHeaders = {}) {
     response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...extraHeaders });
@@ -780,93 +778,22 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
         }, () => requireCredentials(state), () => passwordAttempts.delete(key));
         return send(response, 200, result, result.sessionRevoked ? { 'Set-Cookie': cookie('', request, publicOrigin, 0) } : {});
       }
-      if (pathname === '/api/admin/backups' && method === 'GET') {
-        authorize(request, { admin: true });
-        const filename = path.join(dataDir, 'backup-status.json');
-        const stat = await fs.lstat(filename).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
-        if (!stat) return send(response, 200, { configured: false });
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16 * 1024) throw new ApiError(503, 'backup_status_unavailable', '备份状态暂时无法读取。');
-        let status;
-        try { status = JSON.parse(await fs.readFile(filename, 'utf8')); } catch { throw new ApiError(503, 'backup_status_unavailable', '备份状态暂时无法读取。'); }
-        if (!plainObject(status)) throw new ApiError(503, 'backup_status_unavailable', '备份状态暂时无法读取。');
-        const result = { configured: true };
-        for (const key of ['lastSuccessAt', 'lastAttemptAt', 'verifiedAt']) result[key] = typeof status[key] === 'string' && Number.isFinite(Date.parse(status[key])) ? status[key] : null;
-        for (const key of ['backupCount', 'retentionDays', 'latestSizeBytes']) result[key] = Number.isSafeInteger(status[key]) && status[key] >= 0 ? status[key] : null;
-        // A private operational error can contain paths; the UI only needs a safe summary.
-        result.lastError = status.lastError ? '最近一次备份失败，请检查服务器备份服务。' : null;
-        return send(response, 200, result);
-      }
-      if (pathname === '/api/gatherings' && method === 'GET') {
-        authorize(request, { editor: true });
-        return send(response, 200, { gatherings: [gatheringSummary(gatheringDetail(state), false), ...state.gatherings.slice().reverse().map(saved => gatheringSummary(gatheringDetail(saved, true), true))] });
-      }
-      const gatheringMatch = pathname.match(/^\/api\/gatherings\/([^/]+)$/);
-      if (gatheringMatch && method === 'GET') {
-        authorize(request, { editor: true });
-        if (gatheringMatch[1] === state.currentGathering.id) return send(response, 200, gatheringDetail(state));
-        const saved = state.gatherings.find(item => item.gathering.id === gatheringMatch[1]);
-        if (!saved) throw new ApiError(404, 'not_found', '该次聚餐不存在。');
-        return send(response, 200, gatheringDetail(saved, true));
-      }
-      if (pathname === '/api/admin/gatherings' && method === 'POST') {
-        authorize(request, { admin: true, csrf: true });
+      if (pathname === '/api/admin/bill/reset' && method === 'POST') {
+        const permission = { admin: true, csrf: true };
+        authorize(request, permission);
         const body = await readJson(request);
-        knownKeys(body, ['version', 'name', 'date', 'carryMembers'], '聚餐');
-        const name = requireText(body.name, '聚餐名称', 1, 80);
-        if (/[\r\n\u0000-\u001f\u007f]/.test(name) || !validDate(body.date) || typeof body.carryMembers !== 'boolean') throw new ApiError(422, 'validation_error', '请输入有效的聚餐名称、日期及是否保留成员。');
+        knownKeys(body, ['version'], '账单');
         const result = await mutate(next => {
-          const auth = authorize(request, { admin: true, csrf: true });
-          checkVersion(body, next, { allowFinalized: true });
-          if (next.currentGathering.status !== 'finalized') throw new ApiError(409, 'gathering_open', '请先将当前聚餐定稿，再创建下一次聚餐。');
-          next.gatherings.push(structuredClone(gatheringDetail(next)));
-          next.currentGathering = newGathering(name, body.date);
-          next.members = body.carryMembers ? next.members : [];
+          const auth = authorize(request, permission);
+          checkVersion(body, next);
+          const expenseCount = next.expenses.length, advanceCount = next.advances.length;
           next.expenses = [];
           next.advances = [];
+          next.currentGathering = newGathering(next.currentGathering.name);
           next.version += 1;
-          appendAudit(next, request, auth, 'gathering.created', `创建聚餐「${name}」（${body.date}），上一聚餐已归档${body.carryMembers ? '，保留成员' : ''}`);
+          appendAudit(next, request, auth, 'bill.cleared', `清空本次账单（${expenseCount} 道菜品或费用、${advanceCount} 笔垫付），保留全部 ${next.members.length} 位成员`);
           return 'public';
-        }, () => authorize(request, { admin: true, csrf: true }));
-        return send(response, 201, result);
-      }
-      const editGatheringMatch = pathname.match(/^\/api\/admin\/gatherings\/([^/]+)$/);
-      if (editGatheringMatch && method === 'PATCH') {
-        authorize(request, { admin: true, csrf: true });
-        const body = await readJson(request);
-        knownKeys(body, ['version', 'name', 'date'], '聚餐');
-        if (body.name === undefined && body.date === undefined) throw new ApiError(422, 'validation_error', '请提供聚餐名称或日期。');
-        const name = body.name === undefined ? undefined : requireText(body.name, '聚餐名称', 1, 80);
-        if ((name !== undefined && /[\r\n\u0000-\u001f\u007f]/.test(name)) || (body.date !== undefined && !validDate(body.date))) throw new ApiError(422, 'validation_error', '请输入有效的聚餐名称和日期。');
-        const result = await mutate(next => {
-          const auth = authorize(request, { admin: true, csrf: true });
-          if (next.currentGathering.id !== editGatheringMatch[1]) throw new ApiError(409, 'history_read_only', '历史聚餐为只读，不能修改。');
-          checkVersion(body, next);
-          const oldName = next.currentGathering.name;
-          if (name !== undefined) next.currentGathering.name = name;
-          if (body.date !== undefined) next.currentGathering.date = body.date;
-          next.version += 1;
-          appendAudit(next, request, auth, 'gathering.updated', `修改聚餐「${oldName}」名称或日期`);
-          return 'public';
-        }, () => authorize(request, { admin: true, csrf: true }));
-        return send(response, 200, result);
-      }
-      const gatheringActionMatch = pathname.match(/^\/api\/admin\/gatherings\/([^/]+)\/(finalize|reopen)$/);
-      if (gatheringActionMatch && method === 'POST') {
-        authorize(request, { admin: true, csrf: true });
-        const body = await readJson(request);
-        knownKeys(body, ['version'], '聚餐');
-        const result = await mutate(next => {
-          const auth = authorize(request, { admin: true, csrf: true });
-          checkVersion(body, next, { allowFinalized: true });
-          if (next.currentGathering.id !== gatheringActionMatch[1]) throw new ApiError(409, 'history_read_only', '历史聚餐为只读，不能修改。');
-          const finalize = gatheringActionMatch[2] === 'finalize';
-          if ((next.currentGathering.status === 'finalized') === finalize) throw new ApiError(409, 'gathering_status', finalize ? '这次聚餐已经定稿。' : '这次聚餐已经处于可编辑状态。');
-          next.currentGathering.status = finalize ? 'finalized' : 'open';
-          next.currentGathering.finalizedAt = finalize ? new Date().toISOString() : null;
-          next.version += 1;
-          appendAudit(next, request, auth, finalize ? 'gathering.finalized' : 'gathering.reopened', `${finalize ? '定稿' : '重新开启'}聚餐「${next.currentGathering.name}」`);
-          return 'public';
-        }, () => authorize(request, { admin: true, csrf: true }));
+        }, () => authorize(request, permission));
         return send(response, 200, result);
       }
       const advanceMatch = pathname.match(/^\/api\/admin\/advances\/([^/]+)$/);
@@ -945,7 +872,6 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
         const permission = { admin: !avatar, editor: avatar, csrf: true };
         const authorizeUpload = () => {
           const auth = authorize(request, permission);
-          if (avatar) requireLedgerOpen(state);
           return auth;
         };
         authorizeUpload();
@@ -997,19 +923,26 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
         const permission = { admin: method === 'DELETE', editor: true, csrf: true };
         authorize(request, permission);
         const body = await readJson(request);
-        knownKeys(body, method === 'PATCH' ? ['version', 'title'] : ['version'], '费用');
+        knownKeys(body, method === 'PATCH' ? ['version', 'title', 'amountCents', 'participantIds'] : ['version'], '费用');
         const result = await mutate(next => {
           authorize(request, permission);
           checkVersion(body, next);
           const expense = next.expenses.find(item => item.id === adminExpenseMatch[1]);
           if (!expense) throw new ApiError(404, 'not_found', '该笔费用不存在。');
           const oldTitle = expense.title;
-          if (method === 'PATCH') expense.title = expenseTitle(body.title);
-          else {
+          if (method === 'PATCH') {
+            if (body.title === undefined && body.amountCents === undefined && body.participantIds === undefined) throw new ApiError(422, 'validation_error', '请提供需要修改的菜品名称、金额或参与人。');
+            const title = body.title === undefined ? expense.title : expenseTitle(body.title);
+            const allocation = expenseAllocation({ amountCents: expense.amountCents, participantIds: expense.participantIds, ...body }, next);
+            if (next.advances.filter(item => item.expenseId === expense.id).reduce((sum, item) => sum + item.amountCents, 0) > allocation.amountCents) throw new ApiError(422, 'advance_exceeds_expense', '费用金额不能低于已记录的垫付合计，请先调整垫付记录。');
+            const oldAmount = expense.amountCents, oldParticipants = participants(expense, next);
+            Object.assign(expense, { title, ...allocation });
+            appendAudit(next, request, authorize(request, permission), 'expense.updated', `修改菜品或费用「${oldTitle}」→「${title}」：金额 ${money(oldAmount)} → ${money(expense.amountCents)}；参与人 ${oldParticipants} → ${participants(expense, next)}`);
+          } else {
             if (next.advances.some(item => item.expenseId === expense.id)) throw new ApiError(422, 'advance_exists', '该费用已有垫付记录，请先删除相关垫付记录。');
             next.expenses = next.expenses.filter(item => item.id !== expense.id);
+            appendAudit(next, request, authorize(request, permission), 'expense.deleted', `删除费用「${oldTitle}」（${money(expense.amountCents)}）`);
           }
-          appendAudit(next, request, authorize(request, permission), method === 'PATCH' ? 'expense.updated' : 'expense.deleted', method === 'PATCH' ? `修改费用名称：「${oldTitle}」→「${expense.title}」` : `删除费用「${oldTitle}」（${money(expense.amountCents)}）`);
           next.version += 1;
           return 'public';
         }, () => authorize(request, permission));

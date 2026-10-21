@@ -30,26 +30,27 @@ const avatarSource = member => typeof member?.avatarUrl === 'string' && /^\/medi
 const avatarMarkup = (member, classes='') => `<div class="avatar ${classes}" aria-hidden="true">${avatarSource(member)?`<img src="${esc(avatarSource(member))}" alt="">`:esc(member.name?.slice(-1)||'人')}</div>`;
 const copyContent = value => structuredClone(value);
 let content = copyContent(DEFAULT_CONTENT), contentDraft = copyContent(DEFAULT_CONTENT), contentLoaded = false;
-let adminTab = 'expenses', ledgerTab = 'expenses', contentSaving = false, contentSaveFailed = false, contentConflict = null, pendingLeave = null, uploadGeneration = 0;
+let adminTab = 'members', contentSaving = false, contentSaveFailed = false, contentConflict = null, pendingLeave = null, uploadGeneration = 0;
 const contentUploads = new Set();
 let contentPreviewField = 'heroTitleLine1';
 let state = null, user = null, csrfToken = '', ledger = null, accounts = [], currentView = 'ledger';
 let saveTimer, toastTimer, savingPromise = null, saveFailed = false, detailMemberId = null, editMemberId = null;
 const dirty = new Map(), revisions = new Map(), invalidInputs = new Map();
 let participantExpenseId = null, participantDraft = new Set(), editExpenseId = null;
+let expenseEditorDraft = new Set(), expenseEditorSaving = false, expenseEditorBillKey = null;
+let resetBillVersion = null, resetBillKey = null, resetBillSaving = false;
 let memberAvatarDraft = '', memberAvatarUploading = false, memberAvatarGeneration = 0, memberSaving = false;
 let authIdentity = '', auditLogs = [], auditLoading = false, auditError = '', auditHasMore = false, auditBefore = null, auditGeneration = 0;
 let editAccountId = null, accountSaving = false, accountEditGeneration = 0, accountListGeneration = 0;
 let syncError='',serverState=null, pendingRemote=null, recovery=null, syncRunning=false, lastSyncAt=null, quitting=false, resettingAccountId=null, editAdvanceId=null;
 const pendingWrites=new Set(),editedForms=new Set();
-const adminTabs=['expenses','members','gatherings','accounts','security','content','backups','logs'];
-const ledgerTabs=['expenses','people','settlement'];
-const canEditLedger=()=>canManageLedger()&&state?.currentGathering?.status!=='finalized'&&!quitting&&!recovery;
-const editableDialogs=['participants-dialog','member-dialog','expense-dialog','account-dialog','advance-dialog','reset-password-dialog'];
+const adminTabs=['members','accounts','security','content','logs'];
+const canEditLedger=()=>canManageLedger()&&!quitting&&!recovery;
+const editableDialogs=['participants-dialog','member-dialog','expense-dialog','account-dialog','advance-dialog','reset-password-dialog','reset-bill-dialog'];
 let releasesLoaded = false, releasesLoading = false, releaseLoadAttempt = 0;
 const isAdmin = () => user?.role === 'admin';
 const canManageLedger = () => ['admin','editor'].includes(user?.role);
-const canAccessAdminTab = tab => adminTabs.includes(tab)&&canManageLedger()&&(isAdmin()||['expenses','members','security'].includes(tab));
+const canAccessAdminTab = tab => adminTabs.includes(tab)&&canManageLedger()&&(isAdmin()||['members','security'].includes(tab));
 const beijingTime = new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
 
 document.querySelectorAll('[data-icon]').forEach(element => { element.innerHTML = icon(element.dataset.icon); });
@@ -90,7 +91,7 @@ function renderSync() {
 }
 function acceptRemote(remote) {
   state=structuredClone(remote);serverState=structuredClone(remote);pendingRemote=null;recovery=null;lastSyncAt=new Date();
-  renderExpenses();renderAdmin();renderSync();renderGatheringAdmin();
+  renderExpenses();renderAdmin();renderSync();
 }
 function receiveConflict(remote) {
   clearTimeout(saveTimer);
@@ -134,34 +135,28 @@ function renderAuth() {
   if (identity !== authIdentity) { authIdentity = identity; accounts = []; accountListGeneration++; closeAccountEditor(); resetAuditLogs(); }
   $('accounts-section').hidden = !isAdmin();
   adminTabs.forEach(tab=>{$(`${tab}-tab`).hidden=!canAccessAdminTab(tab);});
-  if(!canAccessAdminTab(adminTab))adminTab='expenses';
+  if(!canAccessAdminTab(adminTab))adminTab='members';
   renderAdminTabs();
-  $('history-nav').hidden=!user;
   document.querySelectorAll('[data-admin-shortcut]').forEach(button=>{button.hidden=!canManageLedger();});
   $('guest-banner').hidden = Boolean(user);
   $('auth-button').innerHTML = `${icon(user ? 'people' : 'lock')}<span>${user ? `${esc(user.username)} · 退出` : '登录编辑'}</span>`;
-  $('expense-edit-hint').textContent = state?.currentGathering?.status==='finalized'?'账单已定稿 · 只读':user?'修改后自动保存':'登录后可编辑';
+  $('expense-edit-hint').textContent = user?'金额和参与人修改后自动保存':'登录后可编辑';
   $('admin-nav').querySelector('.nav-lock').innerHTML = icon(canManageLedger() ? 'arrow' : 'lock');
-  if (state) {renderAdmin();renderGatheringAdmin();renderAdvances();}
+  if (state) {renderAdmin();renderAdvances();}
   if (state) updateExpenseControls();
   updateContentStatus();
   if (!canManageLedger() && currentView === 'admin') switchView('ledger');
-  if(!user){$('gathering-list').innerHTML='';$('history-detail-content').innerHTML='';if($('history-detail-dialog').open)$('history-detail-dialog').close();$('sessions-list').innerHTML='';$('backup-status').innerHTML='';if(currentView==='history')switchView('ledger');}
+  if(!user)$('sessions-list').innerHTML='';
 }
-function emptyCard(message, actionLabel='打开管理后台',tab='expenses') {
+function emptyCard(message, actionLabel='添加成员',tab='members') {
   return `<div class="empty-card"><span class="empty-card-icon">${icon('people')}</span><h3>${esc(message)}</h3><button class="button button-outline" type="button" data-open-admin-tab="${esc(tab)}" data-open-add-form>${esc(actionLabel)}</button></div>`;
 }
 function renderSummary() {
   if (!state) return;
   renderBreadcrumb();
   ledger = calculateLedger(state);
-  $('current-gathering-label').textContent=state.currentGathering?`${state.currentGathering.name} · ${state.currentGathering.date}`:content.texts.gatheringName;
-  $('current-gathering-status').textContent=state.currentGathering?.status==='finalized'?'已定稿':'进行中';
   const showPeople = state.expenses.length > 0;
   $('people-section').hidden = !showPeople;
-  ['people','settlement'].forEach(tab=>{$(`ledger-${tab}-tab`).hidden=!showPeople;});
-  if(!showPeople&&ledgerTab!=='expenses')ledgerTab='expenses';
-  renderLedgerTabs();
   $('hero-total').textContent = moneyDigits(ledger.totalCents);
   $('hero-total').classList.toggle('is-large', moneyDigits(ledger.totalCents).length > 8);
   $('bar-total').textContent = formatMoney(ledger.totalCents);
@@ -169,7 +164,7 @@ function renderSummary() {
   $('balance-result').classList.toggle('unbalanced', !ledger.balanced);
   $('balance-label').textContent = ledger.balanced ? '分账已核对' : '金额尚未配平';
   $('balance-difference').textContent = `差额 ${formatMoney(Math.abs(ledger.differenceCents))}`;
-  $('people-grid').innerHTML = !showPeople ? '' : ledger.people.length ? ledger.people.map((person,index) => `<article class="person-card color-${colorClass(person,index)}"><div class="person-top">${avatarMarkup(person)}<span class="person-index">${String(index+1).padStart(2,'0')}</span></div><button class="person-name" data-person="${esc(person.id)}" aria-label="查看${esc(person.name)}的费用明细">${esc(person.name)}${icon('arrow')}</button>${person.note?`<p class="person-note">${esc(person.note)}</p>`:''}<div class="person-amount-label">分摊份额</div><div class="person-amount ${moneyDigits(person.totalCents).length>8?'is-large':''}"><span>¥</span>${moneyDigits(person.totalCents)}</div><div class="person-net"><span>已垫付 ${formatMoney(person.paidCents||0)}</span><strong>${ledger.settlementReady?'':'暂算'}${(person.netCents||0)>0?'应收':'待付'} ${formatMoney(Math.abs(person.netCents??-person.totalCents))}</strong></div><div class="person-divider"></div><div class="person-chips">${person.items.map(item => `<span class="person-chip ${item.participating?'':'absent'}">${esc(expenseTitle(item))}</span>`).join('')}</div></article>`).join('') : emptyCard('还没有聚餐成员','在后台添加成员','members');
+  $('people-grid').innerHTML = !showPeople ? '' : ledger.people.length ? ledger.people.map((person,index) => `<article class="person-card color-${colorClass(person,index)}"><div class="person-top">${avatarMarkup(person)}</div><button class="person-name" data-person="${esc(person.id)}" aria-label="查看${esc(person.name)}的费用明细">${esc(person.name)}${icon('arrow')}</button><div class="person-amount-label">应付合计</div><div class="person-amount ${moneyDigits(person.totalCents).length>8?'is-large':''}"><span>¥</span>${moneyDigits(person.totalCents)}</div>${state.advances?.length?`<div class="person-net"><span>已垫付 ${formatMoney(person.paidCents||0)}</span><strong>${ledger.settlementReady?'':'暂算'}${(person.netCents||0)>0?'应收':'待付'} ${formatMoney(Math.abs(person.netCents??-person.totalCents))}</strong></div>`:''}</article>`).join('') : emptyCard('还没有聚餐成员','添加成员','members');
   ledger.expenses.forEach(expense => {
     const card = document.querySelector(`[data-expense="${CSS.escape(expense.id)}"]`);
     if (!card) return;
@@ -185,15 +180,20 @@ function renderSummary() {
   else if ($('detail-dialog').open && detailMemberId) renderDetail(detailMemberId);
 }
 function renderExpenses() {
-  $('expense-edit-hint').textContent=state.currentGathering?.status==='finalized'?'账单已定稿 · 只读':user?'修改后自动保存':'登录后可编辑';
+  $('expense-edit-hint').textContent=user?'金额和参与人修改后自动保存':'登录后可编辑';
   if($('participants-dialog').open)$('participants-dialog').close();
   invalidInputs.clear();
-  $('expense-grid').innerHTML = state.expenses.length ? state.expenses.map(expense => `<article class="expense-card" data-expense="${esc(expense.id)}" data-kind="${kind(expense)}"><div class="expense-top"><span class="expense-icon">${icon(kind(expense))}</span><h3 class="expense-title">${esc(expenseTitle(expense))}</h3></div><div class="expense-amount-group"><label class="field-caption" for="amount-${esc(expense.id)}">费用金额<span class="currency-hint">人民币 / 元</span></label><div class="amount-control"><span aria-hidden="true">¥</span><input class="amount-input" id="amount-${esc(expense.id)}" data-amount="${esc(expense.id)}" type="text" inputmode="decimal" value="${(expense.amountCents/100).toFixed(2)}" maxlength="12" aria-describedby="error-${esc(expense.id)}" ${user?'':'disabled'} autocomplete="off"></div><div class="field-error" id="error-${esc(expense.id)}" role="alert" hidden></div></div><div class="expense-participants-group"><div class="participants-caption"><span>参与分摊</span><span class="participants-count"></span></div><p class="participants-summary"></p><button type="button" class="button button-outline participant-picker-button" data-select-participants="${esc(expense.id)}">${icon('people')}<span>${user?'选择参与人':'查看参与人'}</span></button></div><div class="expense-allocation"></div></article>`).join('') : emptyCard('还没有费用项目','在后台添加费用');
-  updateExpenseControls(); renderSummary();
+  $('expense-grid').innerHTML = state.expenses.length ? state.expenses.map(expense => `<article class="expense-card" data-expense="${esc(expense.id)}" data-kind="${kind(expense)}"><div class="expense-top"><span class="expense-icon">${icon(kind(expense))}</span><h3 class="expense-title">${esc(expenseTitle(expense))}</h3><div class="expense-card-actions"><button type="button" class="admin-edit" data-edit-expense="${esc(expense.id)}" ${canManageLedger()?'':'hidden'}>编辑</button><button type="button" class="admin-delete" data-delete-expense="${esc(expense.id)}" ${isAdmin()?'':'hidden'}>删除</button></div></div><div class="expense-amount-group"><label class="field-caption" for="amount-${esc(expense.id)}">金额<span class="currency-hint">人民币 / 元</span></label><div class="amount-control"><span aria-hidden="true">¥</span><input class="amount-input" id="amount-${esc(expense.id)}" data-amount="${esc(expense.id)}" type="text" inputmode="decimal" value="${(expense.amountCents/100).toFixed(2)}" maxlength="12" aria-describedby="error-${esc(expense.id)}" autocomplete="off"></div><div class="field-error" id="error-${esc(expense.id)}" role="alert" hidden></div></div><div class="expense-participants-group"><div class="participants-caption"><span>参与分摊的人</span><span class="participants-count"></span></div><p class="participants-summary"></p><button type="button" class="button button-outline participant-picker-button" data-select-participants="${esc(expense.id)}">${icon('people')}<span>${canEditLedger()?'选择吃了这道菜的人':'查看参与人'}</span></button></div><div class="expense-allocation"></div></article>`).join('') : `<div class="empty-card"><span class="empty-card-icon">${icon('dinner')}</span><h3>还没有菜品或费用</h3><p>每道菜单独记一笔，只勾选参与分摊的人。</p><button class="button button-outline" type="button" data-add-expense>添加第一笔</button></div>`;
+  updateExpenseControls();renderSummary();
 }
 function updateExpenseControls() {
-  document.querySelectorAll('[data-amount]').forEach(input => { input.disabled = !canEditLedger(); });
-  document.querySelectorAll('[data-select-participants] span').forEach(span=>{span.textContent=canEditLedger()?'选择参与人':'查看参与人';});
+  document.querySelectorAll('[data-amount]').forEach(input=>{input.disabled=!canEditLedger();});
+  document.querySelectorAll('[data-select-participants] span').forEach(span=>{span.textContent=canEditLedger()?'选择吃了这道菜的人':'查看参与人';});
+  document.querySelectorAll('[data-edit-expense]').forEach(button=>{button.hidden=!canManageLedger();button.disabled=!canEditLedger();});
+  document.querySelectorAll('[data-delete-expense]').forEach(button=>{button.hidden=!isAdmin();button.disabled=!canEditLedger();});
+  $('add-expense').hidden=false;
+  $('add-expense').disabled=Boolean(user)&&!canEditLedger();
+  $('reset-bill').hidden=!isAdmin();$('reset-bill').disabled=!canEditLedger()||!state?.expenses.length&&!state?.advances?.length;
 }
 function fieldError(expenseId,message) {
   const input = document.querySelector(`[data-amount="${CSS.escape(expenseId)}"]`);
@@ -248,27 +248,14 @@ async function flushSaves() {
   try{await savingPromise;}finally{savingPromise=null;}
 }
 function renderDetail(memberId) {
-  const person = ledger.people.find(item => item.id === memberId);
-  if (!person) { $('detail-dialog').close(); return; }
-  detailMemberId = memberId;
-  $('detail-content').innerHTML = `${avatarMarkup(person,`detail-avatar color-${colorClass(person)}`)}<h2 id="detail-heading">${esc(person.name)}的费用明细</h2>${person.note?`<p class="dialog-description">${esc(person.note)}</p>`:''}<div class="detail-caption">分摊份额 · 人民币</div><div class="detail-total ${moneyDigits(person.totalCents).length>8?'is-large':''}"><span>¥</span>${moneyDigits(person.totalCents)}</div><div class="detail-list">${person.items.length?person.items.map(item => {
-    const expense = state.expenses.find(exp => exp.id===item.expenseId);
-    return `<div class="detail-row ${item.participating?'':'absent'}"><span class="expense-icon">${icon(kind(expense))}</span><div><div class="detail-row-title">${esc(expenseTitle(item))}${item.remainderExtra?'<span class="remainder-pill">尾差 +¥0.01</span>':''}</div><div class="detail-row-note">${item.participating ? `总额 ${formatMoney(expense.amountCents)} · ${item.participantCount} 人分摊${item.remainderExtra ? `<br>基础份额 ${formatMoney(item.baseCents)} + 尾差 ¥0.01` : ''}` : '本笔未参与分摊'}</div></div><strong class="detail-row-amount">${item.participating?formatMoney(item.amountCents):'—'}</strong></div>`;
-  }).join(''):'<p class="detail-empty">暂无费用记录</p>'}</div><div class="detail-payment-summary"><div><span>已记录垫付</span><strong>${formatMoney(person.paidCents||0)}</strong></div><div><span>${ledger.settlementReady?'':'暂算'}${(person.netCents||0)>0?'应收':'待付'}</span><strong>${formatMoney(Math.abs(person.netCents??-person.totalCents))}</strong></div>${!ledger.settlementReady?'<p>垫付尚未录全，净额暂供参考。</p>':''}</div>`;
-}
-function renderLedgerTabs() {
-  ledgerTabs.forEach(tab=>{
-    const active=ledgerTab===tab;
-    $(`ledger-${tab}-tab`).classList.toggle('active',active);
-    $(`ledger-${tab}-tab`).setAttribute('aria-selected',String(active));
-    $(`ledger-${tab}-tab`).tabIndex=active?0:-1;
-    $(`ledger-${tab}-panel`).hidden=!active;
-  });
-}
-function setLedgerTab(tab,focus=false) {
-  if(!ledgerTabs.includes(tab)||(tab!=='expenses'&&!state?.expenses.length))return;
-  ledgerTab=tab;renderLedgerTabs();
-  if(focus)$(`ledger-${tab}-tab`).focus();
+  const person=ledger.people.find(item=>item.id===memberId);
+  if(!person){$('detail-dialog').close();return;}
+  detailMemberId=memberId;
+  const items=person.items.filter(item=>item.participating);
+  $('detail-content').innerHTML=`${avatarMarkup(person,`detail-avatar color-${colorClass(person)}`)}<h2 id="detail-heading">${esc(person.name)}的费用明细</h2>${person.note?`<p class="dialog-description">${esc(person.note)}</p>`:''}<div class="detail-caption">应付合计 · 人民币</div><div class="detail-total ${moneyDigits(person.totalCents).length>8?'is-large':''}"><span>¥</span>${moneyDigits(person.totalCents)}</div><div class="detail-list">${items.length?items.map(item=>{
+    const expense=state.expenses.find(exp=>exp.id===item.expenseId);
+    return `<div class="detail-row"><span class="expense-icon">${icon(kind(expense))}</span><div><div class="detail-row-title">${esc(expenseTitle(item))}${item.remainderExtra?'<span class="remainder-pill">尾差 +¥0.01</span>':''}</div><div class="detail-row-note">总额 ${formatMoney(expense.amountCents)} · ${item.participantCount} 人分摊${item.remainderExtra?`<br>基础份额 ${formatMoney(item.baseCents)} + 尾差 ¥0.01`:''}</div></div><strong class="detail-row-amount">${formatMoney(item.amountCents)}</strong></div>`;
+  }).join(''):'<p class="detail-empty">没有参与任何菜品或费用</p>'}</div>${state.advances?.length?`<div class="detail-payment-summary"><div><span>已记录垫付</span><strong>${formatMoney(person.paidCents||0)}</strong></div><div><span>${ledger.settlementReady?'':'暂算'}${(person.netCents||0)>0?'应收':'待付'}</span><strong>${formatMoney(Math.abs(person.netCents??-person.totalCents))}</strong></div>${!ledger.settlementReady?'<p>垫付尚未录全，净额暂供参考。</p>':''}</div>`:''}`;
 }
 function nextNavigationTab(tabs,current,key) {
   if(!tabs.length)return null;
@@ -279,23 +266,20 @@ function nextNavigationTab(tabs,current,key) {
   return tabs[(Math.max(0,tabs.indexOf(current))+(forward?1:-1)+tabs.length)%tabs.length];
 }
 function renderBreadcrumb() {
-  const labels={expenses:'费用管理',members:'聚餐成员',gatherings:'聚餐管理',accounts:'登录账户',security:'账户安全',content:'页面编辑',backups:'自动备份',logs:'操作日志'};
-  const parent=currentView==='admin'?'管理后台':currentView==='ledger'?'当前聚餐':'聚餐空间';
-  const title=currentView==='admin'?labels[adminTab]:currentView==='history'?'聚餐历史':currentView==='releases'?'更新日志':state?.currentGathering?.name||content.texts.gatheringName;
+  const labels={members:'聚餐成员',accounts:'登录账户',security:'账户安全',content:'页面编辑',logs:'操作日志'};
+  const parent=currentView==='admin'?'管理后台':currentView==='ledger'?'分账':'聚餐空间';
+  const title=currentView==='admin'?labels[adminTab]:currentView==='releases'?'更新日志':content.texts.gatheringName;
   document.querySelector('.breadcrumb').innerHTML=`${esc(parent)} <span>/</span> <strong>${esc(title)}</strong>`;
 }
 function switchView(view) {
-  if (!['ledger','admin','releases','history'].includes(view) || (view==='admin'&&!canManageLedger()) || (view==='history'&&!user)) return;
+  if(!['ledger','admin','releases'].includes(view)||(view==='admin'&&!canManageLedger()))return;
   currentView=view;
-  ['ledger','admin','releases','history'].forEach(key=>{
+  ['ledger','admin','releases'].forEach(key=>{
     $(`${key}-view`).hidden=view!==key;
     $(`${key}-nav`).classList.toggle('active',view===key);
     if(view===key)$(`${key}-nav`).setAttribute('aria-current','page');else $(`${key}-nav`).removeAttribute('aria-current');
   });
-  renderBreadcrumb();
-  if(view==='releases')loadReleases();
-  if(view==='history')loadGatherings();
-  window.scrollTo({top:0,behavior:'instant'});
+  renderBreadcrumb();if(view==='releases')loadReleases();window.scrollTo({top:0,behavior:'instant'});
 }
 function releaseDate(value) {
   if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value))return '';
@@ -336,8 +320,7 @@ async function openReleases() {
 }
 function renderAdmin() {
   if(!state)return;
-  ['member-form','expense-form'].forEach(id=>$(id).querySelectorAll('input,select,button').forEach(el=>el.disabled=!canEditLedger()));
-  $('admin-expenses').innerHTML=state.expenses.length?state.expenses.map(expense=>`<div class="admin-row"><span class="expense-icon">${icon(kind(expense))}</span><div class="admin-row-info"><strong>${esc(expense.title)}</strong><p>${formatMoney(expense.amountCents)} · ${expense.participantIds.length} 人分摊</p></div><div class="admin-row-actions"><button class="admin-edit" ${canEditLedger()?'':'disabled'} data-edit-expense="${esc(expense.id)}">改名</button>${isAdmin()?`<button class="admin-delete" ${canEditLedger()?'':'disabled'} data-delete-expense="${esc(expense.id)}">删除</button>`:''}</div></div>`).join(''):'<p class="admin-empty">尚未添加费用，请在下方输入自定义费用名称。</p>';
+  ['member-form'].forEach(id=>$(id).querySelectorAll('input,select,button').forEach(el=>el.disabled=!canEditLedger()));
   $('admin-members').innerHTML = state.members.length?[...state.members].sort((a,b)=>a.order-b.order).map((member,index) => `<div class="admin-row">${avatarMarkup(member,`admin-member-avatar color-${colorClass(member,index)}`)}<div class="admin-row-info"><strong>${esc(member.name)}</strong><p>${member.note?`${esc(member.note)} · `:''}尾差顺序 ${index+1}</p></div><div class="admin-row-actions"><button class="admin-edit" ${canEditLedger()?'':'disabled'} data-edit-member="${esc(member.id)}">编辑</button>${isAdmin()?`<button class="admin-delete" ${canEditLedger()?'':'disabled'} data-delete-member="${esc(member.id)}">删除</button>`:''}</div></div>`).join(''):'<p class="admin-empty">尚未添加成员，请在下方填写成员姓名。</p>';
   $('admin-accounts').innerHTML = isAdmin() ? accounts.map(account => `<div class="admin-row"><div class="avatar admin-member-avatar">${icon('people')}</div><div class="admin-row-info"><strong>${esc(account.username)}</strong><p>${account.id===user?.id?'当前登录账户':'由管理员分配'}</p></div><span class="admin-role">${account.role==='admin'?'管理员':'编辑者'}</span><div class="admin-row-actions"><button class="admin-edit" data-edit-account="${esc(account.id)}">编辑</button><button class="admin-edit" data-reset-password="${esc(account.id)}">重设密码</button><button class="admin-delete" data-delete-account="${esc(account.id)}" ${account.id===user?.id?'disabled':''}>删除</button></div></div>`).join('') : '';
 }
@@ -345,8 +328,8 @@ async function adminAction(action,form=null) {
   showError('admin-error','');
   const button = form?.querySelector('[type="submit"]');
   if (button) button.disabled=true;
-  try { await flushSaves(); if(invalidInputs.size)throw new Error('请先修正金额，或放弃修改。');await action();serverState=structuredClone(state);renderGatheringAdmin(); renderExpenses(); renderAdmin(); toast('管理设置已保存'); if(form){form.reset();editedForms.delete(form.id);} }
-  catch(error) { showError('admin-error',error.message); if(error.status===409 && error.data.state) receiveConflict(error.data.state); }
+  try { await flushSaves(); if(invalidInputs.size)throw new Error('请先修正金额，或放弃修改。');await action();serverState=structuredClone(state); renderExpenses(); renderAdmin(); toast('管理设置已保存'); if(form){form.reset();editedForms.delete(form.id);} }
+  catch(error) { showError(currentView==='admin'?'admin-error':'global-error',error.message); if(error.status===409 && error.data.state) receiveConflict(error.data.state); }
   finally { if(button) button.disabled=false; }
 }
 function pageContentDirty() {
@@ -434,7 +417,7 @@ function setAdminTab(tab) {
   if(!canAccessAdminTab(tab))return;
   adminTab=tab;renderAdminTabs();
   if(tab==='content')updateContentStatus();
-  if(tab==='gatherings')renderGatheringAdmin();if(tab==='security')loadSessions();if(tab==='backups')loadBackups();
+  if(tab==='security')loadSessions();
   if(tab==='logs'&&!auditLogs.length&&!auditLoading)loadAuditLogs();
 }
 function resetAuditLogs() {
@@ -603,12 +586,6 @@ document.querySelector('.admin-tabs').addEventListener('keydown',event=>{
   if(!tab)return;event.preventDefault();
   requestAdminTab(tab,true);
 });
-ledgerTabs.forEach(tab=>$(`ledger-${tab}-tab`).addEventListener('click',()=>setLedgerTab(tab)));
-$('ledger-tabs').addEventListener('keydown',event=>{
-  const tabs=ledgerTabs.filter(tab=>!$(`ledger-${tab}-tab`).hidden);
-  const tab=nextNavigationTab(tabs,ledgerTab,event.key);
-  if(!tab)return;event.preventDefault();setLedgerTab(tab,true);
-});
 $('content-stay').addEventListener('click',()=>{$('content-leave-dialog').close();pendingLeave=null;});
 $('content-discard-leave').addEventListener('click',()=>{const action=pendingLeave;pendingLeave=null;resetContentDraft();$('content-leave-dialog').close();if(action)action();});
 $('content-leave-dialog').addEventListener('cancel',()=>{pendingLeave=null;});
@@ -644,15 +621,15 @@ function updateParticipantDraft() {
 function openParticipants(expenseId) {
   const expense=state.expenses.find(item=>item.id===expenseId);if(!expense)return;
   participantExpenseId=expenseId;participantDraft=new Set(expense.participantIds);
-  $('participants-heading').textContent=`${expense.title} · ${user?'选择参与人':'参与人'}`;
+  $('participants-heading').textContent=`${expense.title} · ${canEditLedger()?'选择参与分摊的人':'参与人'}`;
   const members=[...state.members].sort((a,b)=>a.order-b.order);
-  $('participants-list').innerHTML=members.length?members.map((member,index)=>`<label class="participant-option"><input type="checkbox" data-picker-member="${esc(member.id)}" ${participantDraft.has(member.id)?'checked':''} ${canEditLedger()?'':'disabled'}><span class="checkbox-box">${icon('check')}</span>${avatarMarkup(member,`picker-avatar color-${colorClass(member,index)}`)}<span class="participant-option-name">${esc(member.name)}</span></label>`).join(''):'<p class="admin-empty">暂无成员，请先由管理员在后台添加。</p>';
+  $('participants-list').innerHTML=members.length?members.map((member,index)=>`<label class="participant-option"><input type="checkbox" data-picker-member="${esc(member.id)}" ${participantDraft.has(member.id)?'checked':''} ${canEditLedger()?'':'disabled'}><span class="checkbox-box">${icon('check')}</span>${avatarMarkup(member,`picker-avatar color-${colorClass(member,index)}`)}<span class="participant-option-name">${esc(member.name)}</span></label>`).join(''):'<p class="admin-empty">还没有成员，请先在管理后台添加。</p>';
   $('participants-all').disabled=!canEditLedger()||!members.length;
   $('participants-clear').disabled=!canEditLedger()||!members.length;
   $('participants-confirm').hidden=!canEditLedger();
   updateParticipantDraft();$('participants-dialog').showModal();
 }
-$('expense-grid').addEventListener('click',event=>{const button=event.target.closest('[data-select-participants]');if(button)openParticipants(button.dataset.selectParticipants);});
+$('expense-grid').addEventListener('click',event=>{const picker=event.target.closest('[data-select-participants]'),edit=event.target.closest('[data-edit-expense]'),remove=event.target.closest('[data-delete-expense]');if(picker)openParticipants(picker.dataset.selectParticipants);if(edit)openExpenseEditor(edit.dataset.editExpense);if(remove)deleteExpense(remove.dataset.deleteExpense);});
 $('participants-list').addEventListener('change',event=>{const input=event.target.closest('[data-picker-member]');if(!input||!canEditLedger())return;if(input.checked)participantDraft.add(input.dataset.pickerMember);else participantDraft.delete(input.dataset.pickerMember);updateParticipantDraft();});
 function setAllParticipants(selected) {
   if(!canEditLedger())return;
@@ -699,7 +676,7 @@ function clearLocalEdits(){
   pendingLeave=null;memberAvatarGeneration++;memberAvatarUploading=false;memberSaving=false;memberAvatarDraft='';editMemberId=null;
   contentUploads.clear();contentSaving=false;resetContentDraft();
   document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());
-  ['password-form','reset-password-form','member-form','expense-form','advance-form'].forEach(id=>$(id).reset());
+  ['password-form','reset-password-form','member-form','expense-edit-form','advance-form'].forEach(id=>$(id).reset());
   showError('global-error','');renderSync();
 }
 $('auth-button').addEventListener('click',()=>{if(!user)openLogin();else logout();});
@@ -716,7 +693,7 @@ $('releases-nav').addEventListener('click',()=>requestContentLeave(openReleases)
 $('releases-retry').addEventListener('click',loadReleases);
 async function openAdmin(tab=null,openAddForm=false) {
   if(!user){openLogin();return;}if(!canManageLedger())return;
-  tab=tab??(canAccessAdminTab(adminTab)?adminTab:'expenses');
+  tab=tab??(canAccessAdminTab(adminTab)?adminTab:'members');
   if(!canAccessAdminTab(tab))return;
   if(invalidInputs.size){toast('请先修正标红的金额，再打开管理后台。');return;}
   const identity=authIdentity;
@@ -726,7 +703,7 @@ async function openAdmin(tab=null,openAddForm=false) {
       if(identity!==authIdentity||!canAccessAdminTab(tab))return;
       renderAdmin();setAdminTab(tab);switchView('admin');
       if(openAddForm){
-        const formId={expenses:'expense',members:'member',accounts:'account'}[tab];
+        const formId={members:'member',accounts:'account'}[tab];
         if(formId){$(`${formId}-add-details`).open=true;$(`${formId}-form`).querySelector('input').focus();}
       }
     };
@@ -735,22 +712,96 @@ async function openAdmin(tab=null,openAddForm=false) {
   catch(error){showError('global-error',error.message);}
 }
 $('admin-nav').addEventListener('click',()=>openAdmin());
-document.addEventListener('click',event=>{const button=event.target.closest('[data-open-admin-tab],[data-open-admin]');if(button)openAdmin(button.dataset.openAdminTab||null,button.hasAttribute('data-open-add-form'));});
+document.addEventListener('click',event=>{const add=event.target.closest('[data-add-expense]');if(add){openExpenseEditor();return;}const button=event.target.closest('[data-open-admin-tab],[data-open-admin]');if(button)openAdmin(button.dataset.openAdminTab||null,button.hasAttribute('data-open-add-form'));});
 $('member-form').addEventListener('submit',event=>{event.preventDefault();if(!canEditLedger())return;const form=event.currentTarget;const values=Object.fromEntries(new FormData(form));values.color=normalizeColor(values.color);adminAction(async()=>{state=await api('/api/admin/members',{method:'POST',body:{...values,version:state.version}});},form);});
 $('account-form').addEventListener('submit',event=>{event.preventDefault();if(!isAdmin())return;const form=event.currentTarget,identity=authIdentity;const values=Object.fromEntries(new FormData(form));adminAction(async()=>{const result=await api('/api/admin/accounts',{method:'POST',body:values});if(identity===authIdentity&&isAdmin()){accountListGeneration++;accounts=result.accounts;}},form);});
-$('expense-form').addEventListener('submit',event=>{event.preventDefault();if(!canEditLedger())return;const form=event.currentTarget;const title=form.elements.title.value;adminAction(async()=>{state=await api('/api/admin/expenses',{method:'POST',body:{version:state.version,title,amountCents:0,participantIds:[]}});},form);});
-$('admin-expenses').addEventListener('click',event=>{
-  if(!canEditLedger())return;
-  const edit=event.target.closest('[data-edit-expense]'),remove=event.target.closest('[data-delete-expense]');
-  if(edit){const expense=state.expenses.find(item=>item.id===edit.dataset.editExpense);editExpenseId=expense.id;$('expense-edit-form').elements.title.value=expense.title;showError('expense-edit-error','');$('expense-dialog').showModal();}
-  if(remove&&isAdmin()){const expense=state.expenses.find(item=>item.id===remove.dataset.deleteExpense);if(confirm(`删除费用「${expense.title}」？所有人的应付金额将重新计算。`))adminAction(async()=>{state=await api(`/api/admin/expenses/${encodeURIComponent(expense.id)}`,{method:'DELETE',body:{version:state.version}});});}
+function renderExpenseParticipantChoices() {
+  const members=[...state.members].sort((a,b)=>a.order-b.order);
+  $('expense-participant-list').innerHTML=members.map((member,index)=>`<label class="participant-option"><input type="checkbox" data-expense-member="${esc(member.id)}" ${expenseEditorDraft.has(member.id)?'checked':''}><span class="checkbox-box">${icon('check')}</span>${avatarMarkup(member,`picker-avatar color-${colorClass(member,index)}`)}<span class="participant-option-name">${esc(member.name)}</span></label>`).join('');
+  $('expense-participant-count').textContent=`已选 ${expenseEditorDraft.size} 人`;
+}
+async function openExpenseEditor(id=null) {
+  if(!user){openLogin();return;}if(!canEditLedger()||expenseEditorSaving)return;
+  try {
+    await flushSaves();if(invalidInputs.size)throw new Error('请先修正标红的金额，再添加或编辑菜品。');
+    if(!canEditLedger())return;
+    if(!state.members.length){toast('请先添加参与聚餐的成员');await openAdmin('members',true);return;}
+    const expense=id?state.expenses.find(item=>item.id===id):null;
+    if(id&&!expense)throw new Error('这笔菜品或费用已被删除，请先同步账单。');
+    editExpenseId=expense?.id||null;expenseEditorBillKey=gatheringKey(state);
+    expenseEditorDraft=new Set(expense?expense.participantIds:state.members.map(member=>member.id));
+    const form=$('expense-edit-form');form.reset();editedForms.delete(form.id);
+    form.elements.title.value=expense?.title||'';form.elements.amount.value=expense?(expense.amountCents/100).toFixed(2):'';
+    $('expense-edit-heading').textContent=expense?'编辑菜品 / 费用':'添加菜品 / 费用';
+    $('expense-edit-save').textContent=expense?'保存修改':'添加到本次账单';$('expense-edit-save').disabled=false;
+    showError('expense-edit-error','');renderExpenseParticipantChoices();$('expense-dialog').showModal();form.elements.title.focus();
+  }catch(error){toast(error.message);}
+}
+function setExpenseEditorParticipants(selected) {
+  if(!canEditLedger()||expenseEditorSaving)return;
+  expenseEditorDraft=new Set(selected?state.members.map(member=>member.id):[]);editedForms.add('expense-edit-form');renderExpenseParticipantChoices();
+}
+async function saveExpenseEditor() {
+  if(!canEditLedger()||expenseEditorSaving||!$('expense-dialog').open)return;
+  const form=$('expense-edit-form'),expenseId=editExpenseId,billKey=expenseEditorBillKey;
+  showError('expense-edit-error','');expenseEditorSaving=true;$('expense-edit-save').disabled=true;
+  try {
+    const title=form.elements.title.value.trim(),amountCents=parseAmount(form.elements.amount.value);
+    if(!title)throw new Error('请填写菜品或费用名称。');
+    const participantIds=[...state.members].sort((a,b)=>a.order-b.order).filter(member=>expenseEditorDraft.has(member.id)).map(member=>member.id);
+    if(amountCents>0&&!participantIds.length)throw new Error('请至少勾选一位参与分摊的人。');
+    if(expenseId&&amountCents<expensePaidCents(expenseId))throw new Error(`金额不能低于已记录垫付 ${formatMoney(expensePaidCents(expenseId))}。请先调整垫付记录。`);
+    await flushSaves();if(invalidInputs.size)throw new Error('请先修正账单中标红的金额。');
+    if(!canEditLedger())throw new Error('账单有更新，当前输入已保留。请关闭窗口处理最新账单后重试。');
+    if(billKey!==gatheringKey(state))throw new Error('本次账单已被清空，请关闭窗口后重新添加。当前输入仍保留。');
+    const remote=await api(`/api/admin/expenses${expenseId?`/${encodeURIComponent(expenseId)}`:''}`,{method:expenseId?'PATCH':'POST',body:{version:state.version,title,amountCents,participantIds}});
+    $('expense-dialog').close();acceptRemote(remote);saveStatus('全部修改已保存');toast(expenseId?'菜品或费用已更新':'已添加到本次账单');
+  }catch(error){
+    if(error.status===409&&error.data.state)receiveConflict(error.data.state);
+    showError('expense-edit-error',error.status===409?'账单已更新，当前输入已保留。请关闭窗口，核对最新账单后再添加或编辑。':error.message);
+  }finally{expenseEditorSaving=false;$('expense-edit-save').disabled=false;}
+}
+async function deleteExpense(id) {
+  if(!isAdmin()||!canEditLedger())return;
+  const expense=state.expenses.find(item=>item.id===id);if(!expense)return;
+  if(!confirm(`删除「${expense.title}」？所有人的应付金额将重新计算。`))return;
+  await adminAction(async()=>{state=await api(`/api/admin/expenses/${encodeURIComponent(id)}`,{method:'DELETE',body:{version:state.version}});});
+}
+async function openResetBill() {
+  if(!isAdmin()||!canEditLedger()||resetBillSaving)return;
+  try {
+    await flushSaves();if(invalidInputs.size)throw new Error('请先修正标红的金额，再清空账单。');
+    if(!isAdmin()||!canEditLedger())return;
+    resetBillVersion=state.version;resetBillKey=gatheringKey(state);
+    $('reset-bill-summary').textContent=`将删除本次 ${state.expenses.length} 笔菜品或费用${state.advances?.length?`和 ${state.advances.length} 笔垫付记录`:''}。现有 ${state.members.length} 位成员和登录账户会保留，清空后可以直接记下一次聚餐。此操作不能撤销。`;
+    showError('reset-bill-error','');$('reset-bill-confirm').disabled=false;$('reset-bill-dialog').showModal();
+  }catch(error){toast(error.message);}
+}
+async function confirmResetBill() {
+  if(!isAdmin()||!canEditLedger()||resetBillSaving||!$('reset-bill-dialog').open)return;
+  const version=resetBillVersion,billKey=resetBillKey;resetBillSaving=true;$('reset-bill-confirm').disabled=true;showError('reset-bill-error','');
+  try {
+    await flushSaves();if(invalidInputs.size)throw new Error('请先修正账单中的金额。');
+    if(!isAdmin()||!canEditLedger())throw new Error('账单有更新，请取消后核对再清空。');
+    if(billKey!==gatheringKey(state))throw new Error('本次账单已发生变化，请取消后核对再清空。');
+    const remote=await api('/api/admin/bill/reset',{method:'POST',body:{version}});
+    dirty.clear();revisions.clear();invalidInputs.clear();$('reset-bill-dialog').close();acceptRemote(remote);saveStatus('本次账单已清空');toast('账单已清空，成员已保留');
+  }catch(error){if(error.status===409&&error.data.state)receiveConflict(error.data.state);showError('reset-bill-error',error.status===409?'账单已更新，请取消后核对再清空。':error.message);}
+  finally{resetBillSaving=false;$('reset-bill-confirm').disabled=false;}
+}
+$('add-expense').addEventListener('click',()=>openExpenseEditor());
+$('expense-select-all').addEventListener('click',()=>setExpenseEditorParticipants(true));
+$('expense-select-none').addEventListener('click',()=>setExpenseEditorParticipants(false));
+$('expense-participant-list').addEventListener('change',event=>{
+  const input=event.target.closest('[data-expense-member]');if(!input||!canEditLedger()||expenseEditorSaving)return;
+  if(input.checked)expenseEditorDraft.add(input.dataset.expenseMember);else expenseEditorDraft.delete(input.dataset.expenseMember);
+  editedForms.add('expense-edit-form');$('expense-participant-count').textContent=`已选 ${expenseEditorDraft.size} 人`;
 });
-$('expense-edit-form').addEventListener('submit',async event=>{
-  event.preventDefault();if(!canEditLedger())return;const form=event.currentTarget,button=form.querySelector('[type="submit"]'),expenseId=editExpenseId,title=form.elements.title.value;button.disabled=true;showError('expense-edit-error','');
-  try{await flushSaves();if(invalidInputs.size)throw new Error('请先修正账单中的金额，或放弃修改。');state=await api(`/api/admin/expenses/${encodeURIComponent(expenseId)}`,{method:'PATCH',body:{version:state.version,title}});serverState=structuredClone(state);renderExpenses();renderAdmin();$('expense-dialog').close();toast('费用名称已更新');}
-  catch(error){if(error.status===409&&error.data.state)receiveConflict(error.data.state);showError('expense-edit-error',error.message);}
-  finally{button.disabled=false;}
-});
+$('expense-edit-form').addEventListener('submit',event=>{event.preventDefault();saveExpenseEditor();});
+$('expense-dialog').addEventListener('close',()=>{editedForms.delete('expense-edit-form');editExpenseId=null;expenseEditorBillKey=null;expenseEditorDraft.clear();$('expense-edit-form').reset();});
+$('reset-bill').addEventListener('click',openResetBill);$('reset-bill-confirm').addEventListener('click',confirmResetBill);
+$('reset-bill-dialog').addEventListener('close',()=>{resetBillVersion=null;resetBillKey=null;});
+
 function renderMemberAvatarPreview() {
   const member={name:$('member-edit-form').elements.name.value,avatarUrl:memberAvatarDraft};
   $('member-avatar-preview').innerHTML=avatarSource(member)?`<img src="${esc(avatarSource(member))}" alt="">`:esc(member.name.slice(-1)||'人');
@@ -833,8 +884,8 @@ function accountSessionEnded() {
   clearTimeout(saveTimer);editedForms.clear();dirty.clear();revisions.clear();invalidInputs.clear();recovery=null;pendingRemote=null;saveFailed=false;
   pendingLeave=null;participantDraft.clear();participantExpenseId=null;editExpenseId=null;
   memberAvatarGeneration++;memberAvatarUploading=false;memberSaving=false;memberAvatarDraft='';editMemberId=null;
-  ['account-dialog','member-dialog','expense-dialog','participants-dialog','content-leave-dialog','detail-dialog'].forEach(id=>{if($(id).open)$(id).close();});
-  ['account-form','account-edit-form','member-form','member-edit-form','expense-form','expense-edit-form','participants-form','login-form'].forEach(id=>$(id).reset());
+  ['account-dialog','member-dialog','expense-dialog','participants-dialog','reset-bill-dialog','content-leave-dialog','detail-dialog'].forEach(id=>{if($(id).open)$(id).close();});
+  ['account-form','account-edit-form','member-form','member-edit-form','expense-edit-form','participants-form','login-form'].forEach(id=>$(id).reset());
   $('detail-content').innerHTML='';detailMemberId=null;$('participants-list').innerHTML='';
   $('member-avatar-preview').innerHTML='';$('member-avatar-input').value='';
   contentSaving=false;resetContentDraft();resetAuditLogs();showError('admin-error','');showError('global-error','');
@@ -897,35 +948,6 @@ function updateAdvanceCapacity(){
   const paid=(state?.advances||[]).filter(item=>item.expenseId===expense?.id&&item.id!==editAdvanceId).reduce((sum,item)=>sum+item.amountCents,0);
   $('advance-capacity').textContent=expense?`本笔费用 ${formatMoney(expense.amountCents)}，其余垫付已记 ${formatMoney(paid)}，最多可录 ${formatMoney(expense.amountCents-paid)}。`:'请先添加费用与聚餐成员。';
 }
-function renderGatheringAdmin(){
-  if(!state)return;
-  const gathering=state.currentGathering,finalized=gathering?.status==='finalized';
-  $('gathering-admin-summary').innerHTML=gathering?`<div class="card-heading"><h3>${esc(gathering.name)}</h3><span class="status-pill">${finalized?'已定稿':'进行中'}</span></div><p>${esc(gathering.date)} · 总费用 ${formatMoney(calculateLedger(state).totalCents)}</p>${finalized?`<p class="admin-form-note">定稿后成员、费用和垫付记录均已锁定。解锁会允许修改，已分享的结算金额可能变化。</p><button class="button button-outline" type="button" data-reopen-gathering>解锁本次账单</button>`:`<form id="gathering-edit-form" class="gathering-edit-form"><label>聚餐名称<input name="name" required maxlength="60" value="${esc(gathering.name)}"></label><label>日期<input name="date" type="date" required value="${esc(gathering.date)}"></label><div class="gathering-edit-actions"><button class="button button-outline" type="submit">保存名称与日期</button><button class="text-button" type="button" data-reset-form="gathering-edit-form">取消修改</button></div></form><p class="admin-form-note">${calculateLedger(state).settlementReady?'定稿会锁定当前账单。':'垫付尚未录全，定稿只锁定账单，不会生成完整结算方案。'}</p><button class="button button-primary" type="button" data-finalize-gathering>定稿并锁定本次账单</button>`}`:'正在加载聚餐信息…';
-  $('gathering-form').querySelector('[type="submit"]').disabled=!isAdmin()||!finalized;
-  $('new-gathering-note').textContent=finalized?'新建后，本次账单会归档，后续只能查看。':'请先将本次聚餐定稿，再开始下一次聚餐。';
-  if(!$('gathering-form').elements.date.value)$('gathering-form').elements.date.value=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
-}
-async function gatheringAction(path,body={}) {
-  showError('gathering-error','');
-  try{await flushSaves();if(invalidInputs.size)throw new Error('请先修正金额，或放弃本地修改。');const remote=await api(path,{method:'POST',body:{version:state.version,...body}});dirty.clear();revisions.clear();recovery=null;acceptRemote(remote);toast('聚餐设置已保存');}
-  catch(error){if(error.status===409&&error.data.state)receiveConflict(error.data.state);showError('gathering-error',error.message);}
-}
-async function loadGatherings(){
-  if(!user)return;
-  $('history-refresh').disabled=true;showError('history-error','');
-  const identity=authIdentity;
-  try{const result=await api('/api/gatherings');if(identity!==authIdentity)return;$('gathering-list').innerHTML=result.gatherings.length?result.gatherings.map(item=>`<article class="gathering-card"><div class="card-heading"><span class="status-pill">${item.archived?'已归档':item.status==='finalized'?'已定稿':'当前聚餐'}</span><time>${esc(item.date)}</time></div><h2>${esc(item.name)}</h2><div class="gathering-total">${formatMoney(item.totalCents)}</div><p>${item.memberCount} 位成员 · ${item.expenseCount} 笔费用</p><button class="button button-outline" type="button" data-view-gathering="${esc(item.id)}">查看账单明细</button></article>`).join(''):'<p class="admin-empty">暂无聚餐记录。</p>';}
-  catch(error){showError('history-error',error.message);}finally{$('history-refresh').disabled=false;}
-}
-async function openHistoryDetail(id){
-  const identity=authIdentity;
-  try{
-    const result=await api(`/api/gatherings/${encodeURIComponent(id)}`);if(identity!==authIdentity||!user)return;
-    const calculated=calculateLedger(result),gathering=result.gathering;
-    $('history-detail-content').innerHTML=`<span class="status-pill">${gathering.id!==state.currentGathering?.id?'历史归档 · 只读':gathering.status==='finalized'?'已定稿 · 只读':'当前账单快照 · 只读'}</span><h2 id="history-detail-heading">${esc(gathering.name)}</h2><p class="dialog-description">${esc(gathering.date)} · 总费用 ${formatMoney(calculated.totalCents)}</p><div class="history-people">${calculated.people.map(person=>`<article class="history-person"><div class="card-heading">${avatarMarkup(person,`small-avatar color-${colorClass(person)}`)}<strong>${esc(person.name)}</strong></div><div class="history-person-amount">分摊 ${formatMoney(person.totalCents)}</div><p>已垫付 ${formatMoney(person.paidCents||0)} · ${(person.netCents||0)>0?'应收':'待付'} ${formatMoney(Math.abs(person.netCents??-person.totalCents))}</p><details><summary>分摊明细</summary>${person.items.filter(item=>item.participating).map(item=>`<div class="history-detail-row"><span>${esc(item.title)}</span><strong>${formatMoney(item.amountCents)}</strong></div>`).join('')||'<p>未参与费用</p>'}</details></article>`).join('')}</div><h3>费用项目</h3><div class="history-expenses">${result.expenses.map(item=>`<article class="management-card"><div class="card-heading"><strong>${esc(item.title)}</strong><strong>${formatMoney(item.amountCents)}</strong></div><p>${esc(item.participantIds.map(memberId=>result.members.find(member=>member.id===memberId)?.name||'成员').join('、'))||'无人参与'}</p></article>`).join('')||'<p class="admin-empty">暂无费用</p>'}</div><h3>垫付记录</h3>${(result.advances||[]).map(item=>`<div class="history-detail-row"><span>${esc(result.members.find(m=>m.id===item.memberId)?.name||'成员')} · ${esc(result.expenses.find(e=>e.id===item.expenseId)?.title||'费用')}${item.note?`<small>${esc(item.note)}</small>`:''}</span><strong>${formatMoney(item.amountCents)}</strong></div>`).join('')||'<p class="admin-empty">暂无垫付记录</p>'}${settlementMarkup(result,calculated)}<p class="history-balance">总费用 ${formatMoney(calculated.totalCents)} = 分摊之和 ${formatMoney(calculated.allocatedCents)} · 差额 ${formatMoney(Math.abs(calculated.differenceCents))}</p>`;
-    $('history-detail-dialog').showModal();
-  }catch(error){toast(error.message);}
-}
 async function loadSessions(){
   if(!user)return;const identity=authIdentity;$('sessions-refresh').disabled=true;showError('sessions-error','');
   try{const result=await api('/api/account/sessions');if(identity!==authIdentity)return;$('sessions-list').innerHTML=result.sessions.map(item=>`<article class="session-row"><div><strong>${esc(item.loginIp||'未知 IP')} ${item.current?'<span class="status-pill">当前登录</span>':''}</strong><p>登录 ${esc(auditTime(Number(item.issuedAt)*1000))}<br>到期 ${esc(auditTime(Number(item.expiresAt)*1000))}</p></div><button class="admin-delete" type="button" data-revoke-session="${esc(item.id)}" data-current-session="${Boolean(item.current)}">${item.current?'退出当前设备':'撤销登录'}</button></article>`).join('')||'<p class="admin-empty">没有有效登录记录。</p>';}
@@ -934,15 +956,6 @@ async function loadSessions(){
 async function finishSecurityLogout(message){
   user=null;csrfToken='';clearLocalEdits();try{acceptRemote(await api('/api/state'));}catch{if(serverState)acceptRemote(serverState);}renderAuth();switchView('ledger');saveStatus('浏览模式');toast(message);
 }
-async function loadBackups(){
-  if(!isAdmin())return;const identity=authIdentity;$('backups-refresh').disabled=true;showError('backups-error','');
-  try{
-    const status=await api('/api/admin/backups');if(identity!==authIdentity||!isAdmin())return;
-    const last=status.lastSuccessAt?new Date(status.lastSuccessAt):null,stale=last&&Date.now()-last.getTime()>36*60*60*1000;
-    const warning=!status.configured?'尚未配置自动备份。':status.lastError?'最近一次备份失败，请检查服务器备份任务。':!last?'等待首次成功备份。':stale?'已超过 36 小时没有成功备份，请检查备份任务。':'';
-    $('backup-status').innerHTML=`<div class="card-heading"><h3>${warning?'需要关注':'自动备份正常'}</h3><span class="status-pill">${status.configured?'已配置':'未配置'}</span></div>${warning?`<p class="backup-warning" role="status">${esc(warning)}</p>`:''}<dl class="backup-facts"><div><dt>最近成功</dt><dd>${status.lastSuccessAt?esc(auditTime(status.lastSuccessAt)):'尚无记录'}</dd></div><div><dt>最近尝试</dt><dd>${status.lastAttemptAt?esc(auditTime(status.lastAttemptAt)):'尚无记录'}</dd></div><div><dt>完整性验证</dt><dd>${status.verifiedAt?esc(auditTime(status.verifiedAt)):'尚无记录'}</dd></div><div><dt>已保留备份</dt><dd>${Number(status.backupCount)||0} 份 · 保留 ${Number(status.retentionDays)||0} 天</dd></div><div><dt>最新备份大小</dt><dd>${status.latestSizeBytes?`${(status.latestSizeBytes/1024/1024).toFixed(2)} MB`:'尚无记录'}</dd></div></dl>${status.lastError?`<p class="form-error">${esc(status.lastError)}</p>`:''}<p class="admin-form-note">自动备份保存在本服务器。服务器之外的副本仍需单独安排；此处不提供含账户资料的备份文件下载。</p>`;
-  }catch(error){showError('backups-error',error.message);}finally{$('backups-refresh').disabled=false;}
-}
 $('sync-refresh').addEventListener('click',()=>syncRemote(true));$('review-update').addEventListener('click',openDraftRecovery);
 $('draft-use-server').addEventListener('click',()=>$('draft-list').querySelectorAll('[data-restore-draft]').forEach(input=>input.checked=false));
 $('draft-use-local').addEventListener('click',()=>$('draft-list').querySelectorAll('[data-restore-draft]').forEach(input=>input.checked=!input.disabled));
@@ -950,12 +963,12 @@ $('draft-confirm').addEventListener('click',async()=>{
   if(!recovery)return;showError('draft-error','');
   const selected=new Set([...$('draft-list').querySelectorAll('[data-restore-draft]:checked')].map(input=>input.dataset.restoreDraft));
   try{
-    // Refresh immediately before applying a choice, so deleted/finalized drafts cannot be restored.
+    // Refresh immediately before applying a choice, so deleted or cleared bill drafts cannot be restored.
     const latest=await api('/api/state'),original=recovery.drafts;
     if(latest.version!==recovery.remote.version){pendingRemote=latest;recovery.remote=latest;openDraftRecovery();showError('draft-error','账单刚刚又有更新，请根据最新数据重新确认。');return;}
     const result=reconcileDrafts(latest,original,selected);clearTimeout(saveTimer);dirty.clear();invalidInputs.clear();revisions.clear();
     serverState=structuredClone(latest);state=result.state;recovery=null;pendingRemote=null;saveFailed=false;$('draft-dialog').close();
-    renderExpenses();renderAdmin();renderGatheringAdmin();
+    renderExpenses();renderAdmin();
     for(const id of result.restored){const draft=original.find(item=>item.id===id),inspection=inspectDraft(latest,draft);if(inspection.merged.amountCents!==inspection.expense.amountCents||JSON.stringify(inspection.merged.participantIds)!==JSON.stringify(inspection.expense.participantIds)){revisions.set(id,1);dirty.set(id,1);}if(result.rawInputs.has(id)){const input=document.querySelector(`[data-amount="${CSS.escape(id)}"]`);input.value=result.rawInputs.get(id);fieldError(id,'原始输入已恢复，请检查金额后再保存。');}}
     renderSummary();renderSync();saveStatus(invalidInputs.size?'草稿已恢复 · 请检查金额':dirty.size?'正在恢复草稿…':'已同步最新账单',invalidInputs.size?'error':'');
     if(dirty.size)flushSaves().catch(()=>{});
@@ -969,15 +982,7 @@ $('advance-form').addEventListener('submit',async event=>{
   catch(error){if(error.status===409&&error.data.state)receiveConflict(error.data.state);showError('advance-error',error.message);}finally{button.disabled=false;}
 });
 $('advance-list').addEventListener('click',event=>{const edit=event.target.closest('[data-edit-advance]'),remove=event.target.closest('[data-delete-advance]');if(edit)openAdvanceEditor(edit.dataset.editAdvance);if(remove&&isAdmin()&&canEditLedger()&&confirm('删除这笔垫付记录？结算建议会重新计算。'))adminAction(async()=>{state=await api(`/api/admin/advances/${encodeURIComponent(remove.dataset.deleteAdvance)}`,{method:'DELETE',body:{version:state.version}});});});
-$('gathering-admin-summary').addEventListener('click',event=>{if(!isAdmin())return;if(event.target.closest('[data-finalize-gathering]')&&confirm('定稿后，本次成员、费用和垫付记录都将锁定。确认定稿？'))gatheringAction(`/api/admin/gatherings/${encodeURIComponent(state.currentGathering.id)}/finalize`);if(event.target.closest('[data-reopen-gathering]')&&confirm('解锁后结算金额可能变化，确认重新允许编辑？'))gatheringAction(`/api/admin/gatherings/${encodeURIComponent(state.currentGathering.id)}/reopen`);});
-$('gathering-admin-summary').addEventListener('submit',async event=>{
-  if(event.target.id!=='gathering-edit-form')return;event.preventDefault();if(!isAdmin())return;const form=event.target,button=form.querySelector('[type="submit"]');button.disabled=true;showError('gathering-error','');
-  try{await flushSaves();if(invalidInputs.size)throw new Error('请先修正账单中的金额，或放弃修改。');const values=Object.fromEntries(new FormData(form));const remote=await api(`/api/admin/gatherings/${encodeURIComponent(state.currentGathering.id)}`,{method:'PATCH',body:{version:state.version,...values}});editedForms.delete('gathering-edit-form');acceptRemote(remote);toast('聚餐信息已更新');}catch(error){if(error.status===409&&error.data.state)receiveConflict(error.data.state);showError('gathering-error',error.message);}finally{button.disabled=false;}
-});
-$('gathering-form').addEventListener('submit',event=>{event.preventDefault();if(!isAdmin())return;const form=event.currentTarget;if(confirm('将本次聚餐归档并开始新账单？归档后的账单将仅可查看。')){editedForms.delete('gathering-form');gatheringAction('/api/admin/gatherings',{name:form.elements.name.value,date:form.elements.date.value,carryMembers:form.elements.carryMembers.checked});}});
-$('history-nav').addEventListener('click',()=>{if(!user){openLogin();return;}requestContentLeave(()=>switchView('history'));});$('history-refresh').addEventListener('click',loadGatherings);
-$('gathering-list').addEventListener('click',event=>{const button=event.target.closest('[data-view-gathering]');if(button)openHistoryDetail(button.dataset.viewGathering);});
-$('sessions-refresh').addEventListener('click',loadSessions);$('backups-refresh').addEventListener('click',loadBackups);
+$('sessions-refresh').addEventListener('click',loadSessions);
 $('password-form').addEventListener('submit',async event=>{
   event.preventDefault();if(!user)return;const form=event.currentTarget,button=form.querySelector('[type="submit"]');showError('password-error','');
   if(form.elements.newPassword.value!==form.elements.confirmPassword.value){showError('password-error','两次输入的新密码不一致。');return;}
@@ -995,8 +1000,8 @@ $('reset-password-form').addEventListener('submit',async event=>{
 });
 $('sessions-list').addEventListener('click',async event=>{const button=event.target.closest('[data-revoke-session]');if(!button||!user)return;const current=button.dataset.currentSession==='true';if(current&&localPending()){showError('sessions-error','当前有未保存的输入，请用右上角退出并放弃修改，或先完成保存。');return;}if(!confirm(current?'确认退出当前设备？':'确认撤销这次登录？'))return;button.disabled=true;try{await api(`/api/account/sessions/${encodeURIComponent(button.dataset.revokeSession)}`,{method:'DELETE',body:{}});if(current)await finishSecurityLogout('当前设备已退出登录。');else{toast('已撤销该次登录。');loadSessions();}}catch(error){showError('sessions-error',error.message);button.disabled=false;}});
 $('sessions-revoke-all').addEventListener('click',async()=>{if(!user||!confirm('确认退出该账号的全部设备（包括当前设备）？'))return;try{await flushSaves();if(invalidInputs.size)throw new Error('请先修正金额，或使用右上角退出并放弃修改。');await api('/api/account/sessions/revoke-all',{method:'POST',body:{}});await finishSecurityLogout('该账号的全部设备已退出。');}catch(error){showError('sessions-error',error.message);}});
-document.addEventListener('click',event=>{const reset=event.target.closest('[data-reset-form]');if(!reset)return;const id=reset.dataset.resetForm;editedForms.delete(id);if(id==='gathering-edit-form')renderGatheringAdmin();else $(id).reset();toast('已清空未提交的表单输入');});
-document.addEventListener('input',event=>{const form=event.target.closest('form');if(form&&['member-form','expense-form','gathering-form','gathering-edit-form'].includes(form.id))editedForms.add(form.id);});
+document.addEventListener('click',event=>{const reset=event.target.closest('[data-reset-form]');if(!reset)return;const id=reset.dataset.resetForm;editedForms.delete(id);$(id).reset();toast('已清空未提交的表单输入');});
+document.addEventListener('input',event=>{const form=event.target.closest('form');if(form&&['member-form','expense-edit-form'].includes(form.id))editedForms.add(form.id);});
 window.addEventListener('focus',()=>syncRemote());document.addEventListener('visibilitychange',()=>{if(!document.hidden)syncRemote();});
 setInterval(()=>syncRemote(),5000);
 
@@ -1013,7 +1018,7 @@ async function init(){
     if(results[0].status==='rejected')throw results[0].reason;
     if(results[1].status==='rejected')throw results[1].reason;
     state=results[0].value;serverState=structuredClone(state);lastSyncAt=new Date();user=results[1].value.user;csrfToken=results[1].value.csrfToken||'';
-    renderAuth();renderExpenses();renderSync();renderGatheringAdmin();saveStatus(user?'全部修改已保存':'浏览模式');
+    renderAuth();renderExpenses();renderSync();saveStatus(user?'全部修改已保存':'浏览模式');
   } catch(error){showError('global-error',error.message);saveStatus('加载失败','error');$('people-grid').innerHTML='<div class="loading-card">账单暂未加载，请刷新页面重试。</div>';$('expense-grid').innerHTML='';}
 }
 init();

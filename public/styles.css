@@ -295,3 +295,195 @@ main{max-width:1280px;padding:0 36px}
   .balance-result>div>span{font-size:9px}
   .balance-amount>strong{overflow-wrap:anywhere}
 }
+
+/* A single bill: add a dish, choose who ate it, see each person's amount. */
+.bill-heading{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:28px 0 20px}
+.bill-title{min-width:0}
+.bill-title h1{display:flex;align-items:center;flex-wrap:wrap;gap:12px;font-size:27px;line-height:1.4;letter-spacing:-.5px;margin:0;color:var(--ink);font-weight:650}
+.bill-title-note{font-size:11px;letter-spacing:0;padding:5px 9px;border-radius:6px;background:#eaf1e6;color:#668161;font-weight:500;white-space:nowrap}
+.bill-title>p{margin:11px 0 0;font-size:12px;line-height:1.8;color:#7c8d7b;max-width:520px}
+.bill-total{display:flex;align-items:center;gap:14px;flex-shrink:0;background:#edf3e7;border:1px solid #dfe8d9;padding:15px 21px;border-radius:12px}
+.bill-total>span{font-size:11px;color:#748b68;white-space:nowrap}
+.bill-total strong{display:flex;align-items:baseline;gap:5px;font-size:32px;line-height:1.2;font-weight:600;letter-spacing:-.6px;color:#355d41;overflow-wrap:anywhere}
+.bill-total strong>span:first-child{font-size:17px;font-weight:500}
+.bill-total #hero-total.is-large{font-size:24px}
+.bill-tools{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:25px}
+.bill-primary-actions,.bill-sync{display:flex;align-items:center;gap:17px;min-width:0}
+.bill-primary-actions>.button{padding:11px 17px;font-size:12px;min-height:42px}
+.bill-primary-actions>#reset-bill{font-size:11px;color:#8d9787;font-weight:400;padding:5px 0}
+.bill-primary-actions>#reset-bill:hover{color:var(--red)}
+.bill-sync{gap:11px;font-size:10px;color:#8a9983}
+.bill-sync #sync-time{overflow-wrap:anywhere}
+.bill-sync .text-button{font-size:10px;min-height:28px}
+.bill-workspace{display:grid;grid-template-columns:minmax(0,1fr) 294px;grid-template-areas:"expenses people";gap:25px;align-items:start}
+.bill-workspace:has(#people-section[hidden]){grid-template-columns:1fr;grid-template-areas:"expenses"}
+.bill-workspace .people-section{grid-area:people;margin:0;min-width:0}
+.bill-workspace .expenses-section{grid-area:expenses;margin:0;min-width:0}
+.bill-workspace .section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 15px;min-height:32px}
+.bill-workspace .section-heading h2{font-size:16px;line-height:1.5;margin:0;font-weight:650;letter-spacing:-.2px}
+.bill-workspace .section-heading>.text-button{font-size:10px;min-height:28px;white-space:nowrap}
+.bill-workspace .section-hint{font-size:10px}
+.bill-workspace .expense-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}
+.bill-workspace .expense-card{padding:20px;border-radius:11px;min-width:0}
+.bill-workspace .expense-top{gap:10px;margin-bottom:18px;align-items:center;flex-wrap:wrap}
+.bill-workspace .expense-icon{width:32px;height:32px;border-radius:9px;flex-shrink:0}
+.bill-workspace .expense-title{font-size:14px;line-height:1.6;overflow-wrap:anywhere;min-width:0;flex:1}
+.bill-workspace .expense-card-actions{display:flex;gap:5px;align-items:center}
+.bill-workspace .expense-card-actions .text-button{font-size:10px;min-height:26px;padding:3px 5px}
+.bill-workspace .expense-card-actions .danger-text{color:#b77e71}
+.bill-workspace .field-caption{font-size:10px;line-height:1.6;margin-bottom:7px}
+.bill-workspace .currency-hint{font-size:9px;color:#9aa48f}
+.bill-workspace .amount-control{height:43px;background:#fafbf7;padding:0 11px}
+.bill-workspace .amount-input{font-size:23px;line-height:1.3}
+.bill-workspace .participants-caption{margin:18px 0 7px;font-size:11px;line-height:1.6;align-items:center}
+.bill-workspace .participants-count{font-size:10px;white-space:nowrap}
+.bill-workspace .participants-summary{font-size:11px;line-height:1.8;min-height:20px;margin:0 0 9px;color:#6e8469;overflow-wrap:anywhere}
+.bill-workspace .participant-picker-button{min-height:31px;padding:6px 10px;font-size:10px;width:100%;justify-content:center}
+.bill-workspace .expense-allocation{margin-top:13px;padding-top:11px;font-size:10px;line-height:1.7}
+.bill-workspace .expense-allocation strong{font-size:11px}
+.bill-workspace .people-grid{display:grid;grid-template-columns:1fr;gap:10px}
+.bill-workspace .person-card{display:grid;grid-template-columns:33px minmax(0,1fr) auto;grid-template-rows:auto auto;align-items:center;gap:2px 9px;padding:13px 14px;border-radius:10px;min-height:73px;box-shadow:none}
+.bill-workspace .person-card:hover{transform:none;box-shadow:0 3px 12px #283d3209}
+.bill-workspace .person-top{grid-column:1;grid-row:1/3;margin:0}
+.bill-workspace .person-top .avatar{width:33px;height:33px;border-radius:10px;font-size:13px}
+.bill-workspace .person-name{grid-column:2;grid-row:1;font-size:12px;line-height:1.6;margin:0;min-width:0;overflow-wrap:anywhere;align-items:center;gap:5px;justify-content:flex-start;text-align:left}
+.bill-workspace .person-name svg{height:12px;width:12px;flex-shrink:0}
+.bill-workspace .person-amount-label{grid-column:2;grid-row:2;margin:0;font-size:9px;line-height:1.6;color:#8c9b81}
+.bill-workspace .person-amount{grid-column:3;grid-row:1/3;font-size:21px;line-height:1.3;letter-spacing:-.3px;white-space:nowrap;text-align:right}
+.bill-workspace .person-amount.is-large{font-size:16px}
+.bill-workspace .person-amount>span{font-size:11px}
+.bill-workspace .person-net{grid-column:1/-1;margin:9px 0 0;padding-top:9px;border-top:1px solid #e9eee4;font-size:10px;line-height:1.7;gap:3px}
+.bill-workspace .person-index,.bill-workspace .person-note,.bill-workspace .person-chips,.bill-workspace .person-divider{display:none}
+.bill-workspace .empty-card{padding:35px 22px;grid-column:1/-1}
+.bill-workspace .empty-card-icon{display:none}
+.bill-workspace .empty-card h3{margin:0 0 15px;font-size:15px}
+.bill-workspace .empty-card .button{font-size:11px;min-height:37px}
+.bill-extra{margin:26px 0 0;padding:0;border:1px solid var(--line);border-radius:11px;background:#fff}
+.bill-extra>summary{display:flex;align-items:center;gap:12px;list-style:none;cursor:pointer;padding:16px 19px;font-size:12px;font-weight:550;color:#607858;min-height:54px}
+.bill-extra>summary::-webkit-details-marker{display:none}
+.bill-extra>summary>svg{width:16px;height:16px;margin-left:auto;flex-shrink:0;transition:transform .15s}
+.bill-extra>summary>span[data-icon]{margin-left:auto}
+.bill-extra>summary>span[data-icon] svg{width:16px;height:16px}
+.bill-extra[open]>summary>span[data-icon]{transform:rotate(180deg)}
+.bill-extra>summary .optional-label{font-size:10px;font-weight:400;color:#9aa68f}
+.bill-extra[open]>summary{border-bottom:1px solid var(--line)}
+.bill-extra-body{padding:21px}
+.bill-extra-body .section-heading{margin-bottom:17px}
+.bill-extra-body .section-heading h2{font-size:15px}
+.bill-extra-body .settlement-summary{margin-top:0}
+.bill-extra-body .settlement-summary>div{padding:15px}
+.bill-extra-body .settlement-summary strong{font-size:22px}
+.bill-extra-body .settlement-plan{margin-top:18px}
+.dish-participants{min-width:0;border:0;padding:0;margin:23px 0}
+.dish-participants>legend{font-size:12px;font-weight:600;color:#526e4d;padding:0;margin:0 0 9px}
+.dish-participants .participant-picker-tools{margin:0 0 10px;gap:10px;font-size:11px}
+.dish-participants .participant-picker-tools .text-button{font-size:11px;min-height:26px}
+.expense-editor-modal .participant-picker-list{max-height:256px;overflow:auto;display:grid;gap:8px;overscroll-behavior:contain}
+.expense-editor-modal .participant-picker-list label{margin:0}
+.expense-editor-modal .dialog-actions{margin-top:19px}
+.expense-editor-modal .dialog-description{font-size:12px}
+#reset-bill-dialog .dialog-description{line-height:1.9}
+#reset-bill-dialog #reset-bill-confirm{background:#a15f4c;border-color:#a15f4c;color:#fff}
+.admin-workspace{grid-template-columns:170px minmax(0,1fr)}
+.admin-tabs{padding-top:0}
+.admin-tab{min-height:43px}
+@media(max-width:1100px) and (min-width:721px){
+  .bill-workspace{grid-template-columns:minmax(0,1fr) 250px;gap:19px}
+  .bill-workspace .expense-grid{grid-template-columns:1fr}
+  .bill-workspace .expense-card{padding:19px}
+  .bill-workspace .person-card{grid-template-columns:29px minmax(0,1fr) auto;padding:12px 11px;gap:2px 7px}
+  .bill-workspace .person-top .avatar{width:29px;height:29px;font-size:12px}
+  .bill-workspace .person-name{font-size:11px}
+  .bill-workspace .person-amount{font-size:19px}
+  .bill-total{padding:14px 17px;gap:11px}
+  .bill-total strong{font-size:29px}
+  .bill-title h1{font-size:25px;gap:9px}
+  .bill-title>p{font-size:11px}
+  .bill-sync{width:100%;justify-content:flex-end}
+  .bill-tools{gap:9px}
+  .admin-workspace{grid-template-columns:150px minmax(0,1fr)}
+}
+@media(max-width:720px){
+  .bill-heading{align-items:flex-start;gap:15px;padding:24px 0 17px}
+  .bill-title h1{font-size:22px;gap:8px;line-height:1.5}
+  .bill-title-note{font-size:9px;padding:4px 6px;line-height:1.5}
+  .bill-title>p{font-size:10px;line-height:1.8;margin-top:9px}
+  .bill-total{display:block;min-width:116px;padding:13px 12px;border-radius:10px}
+  .bill-total>span{display:block;font-size:9px;margin-bottom:8px}
+  .bill-total strong{font-size:26px;letter-spacing:-.5px;gap:4px}
+  .bill-total strong>span:first-child{font-size:13px}
+  .bill-total #hero-total.is-large{font-size:19px}
+  .bill-tools{gap:12px;margin-bottom:20px;padding-bottom:17px}
+  .bill-primary-actions{gap:14px;flex-wrap:wrap}
+  .bill-primary-actions>.button{font-size:11px;min-height:39px;padding:10px 14px}
+  .bill-primary-actions>#reset-bill{font-size:10px}
+  .bill-sync{width:100%;justify-content:space-between;font-size:9px}
+  .bill-sync .text-button{font-size:10px;min-height:23px}
+  .bill-workspace{display:grid;grid-template-columns:1fr;grid-template-areas:"people" "expenses";gap:25px}
+  .bill-workspace .section-heading{margin-bottom:12px;min-height:28px;gap:10px}
+  .bill-workspace .section-heading h2{font-size:15px}
+  .bill-workspace .section-heading>.text-button{font-size:10px;min-height:25px}
+  .bill-workspace .section-hint{font-size:9px}
+  .bill-workspace .people-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+  .bill-workspace .person-card{grid-template-columns:26px minmax(0,1fr);gap:5px 7px;padding:11px;min-height:82px;border-radius:9px}
+  .bill-workspace .person-top{grid-column:1;grid-row:1;margin:0}
+  .bill-workspace .person-top .avatar{width:26px;height:26px;border-radius:8px;font-size:11px}
+  .bill-workspace .person-name{grid-column:2;grid-row:1;font-size:11px;line-height:1.5}
+  .bill-workspace .person-name svg{width:10px;height:10px}
+  .bill-workspace .person-amount-label{display:none}
+  .bill-workspace .person-amount{grid-column:1/-1;grid-row:2;text-align:left;font-size:21px;margin-top:3px;line-height:1.25}
+  .bill-workspace .person-amount.is-large{font-size:16px}
+  .bill-workspace .person-amount>span{font-size:11px}
+  .bill-workspace .person-net{grid-column:1/-1;font-size:9px;margin-top:5px;padding-top:6px;line-height:1.6}
+  .bill-workspace .expense-grid{grid-template-columns:1fr;gap:13px}
+  .bill-workspace .expense-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 16px;padding:17px;border-radius:10px}
+  .bill-workspace .expense-top{grid-column:1/-1;margin-bottom:16px;gap:9px}
+  .bill-workspace .expense-icon{height:31px;width:31px}
+  .bill-workspace .expense-title{font-size:14px}
+  .bill-workspace .expense-amount-group{grid-column:1}
+  .bill-workspace .expense-participants-group{grid-column:2;min-width:0}
+  .bill-workspace .amount-control{height:42px;padding:0 10px}
+  .bill-workspace .amount-input{font-size:21px}
+  .bill-workspace .field-caption{font-size:10px;margin-bottom:7px;min-height:16px}
+  .bill-workspace .currency-hint{display:none}
+  .bill-workspace .participants-caption{margin:0 0 7px;font-size:10px;min-height:16px;gap:7px}
+  .bill-workspace .participants-count{font-size:9px}
+  .bill-workspace .participants-summary{font-size:10px;line-height:1.7;min-height:27px;margin:0 0 7px}
+  .bill-workspace .participant-picker-button{min-height:29px;font-size:10px;padding:5px 8px}
+  .bill-workspace .participant-picker-button svg{width:13px;height:13px}
+  .bill-workspace .expense-allocation{grid-column:1/-1;margin-top:12px;padding-top:10px;font-size:10px}
+  .bill-workspace .expense-allocation strong{font-size:11px}
+  .bill-workspace .field-error{font-size:10px}
+  .bill-workspace .empty-card{padding:28px 20px}
+  .bill-extra{margin-top:22px;border-radius:10px}
+  .bill-extra>summary{padding:14px 15px;font-size:11px;min-height:49px;gap:9px}
+  .bill-extra>summary .optional-label{font-size:9px}
+  .bill-extra-body{padding:17px}
+  .bill-extra-body .settlement-summary>div{padding:13px 9px}
+  .bill-extra-body .settlement-summary strong{font-size:19px}
+  .bill-extra-body .settlement-summary span{font-size:9px}
+  .bill-extra-body .section-heading h2{font-size:14px}
+  .dish-participants>legend{font-size:11px}
+  .expense-editor-modal .participant-picker-list{max-height:223px}
+  .admin-workspace{display:block}
+  .admin-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;padding:10px;margin-bottom:22px}
+  .admin-tab{font-size:10px;padding:10px 7px;min-height:39px}
+}
+@media(max-width:375px){
+  .bill-title h1{font-size:20px}
+  .bill-heading{gap:11px}
+  .bill-total{min-width:107px;padding:12px 10px}
+  .bill-total strong{font-size:24px}
+  .bill-total>span{font-size:8px}
+  .bill-tools{gap:9px}
+  .bill-primary-actions{gap:12px}
+  .bill-primary-actions>.button{font-size:10px;padding:9px 12px;min-height:37px}
+  .bill-primary-actions>#reset-bill{font-size:9px}
+  .bill-workspace .person-card{padding:10px;gap:4px 6px}
+  .bill-workspace .person-amount{font-size:19px}
+  .bill-workspace .expense-card{padding:15px;gap:0 12px}
+  .bill-workspace .amount-input{font-size:20px}
+  .bill-workspace .expense-title{font-size:13px}
+  .bill-extra>summary{padding:13px;font-size:10px}
+  .bill-extra>summary .optional-label{font-size:8px}
+}

@@ -1,9 +1,9 @@
 {
   "name": "dinner-split",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "private": true,
   "type": "module",
-  "description": "Self-hosted dinner expense splitting with integer-cent calculations, role-based administration, history and Docker deployment",
+  "description": "Self-hosted per-dish dinner expense splitting with integer-cent calculations, member selection and Docker deployment",
   "engines": {
     "node": ">=20"
   },
@@ -12,9 +12,7 @@
     "dev": "node server.mjs",
     "check:version": "node scripts/check-version.mjs",
     "build": "node scripts/build.mjs",
-    "test": "node --test tests/*.test.mjs",
-    "backup": "node scripts/backup.mjs",
-    "backup:verify": "node scripts/restore-backup.mjs --verify"
+    "test": "node --test tests/*.test.mjs"
   },
   "license": "MIT"
 }

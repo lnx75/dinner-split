@@ -14,9 +14,9 @@ COPY scripts ./scripts
 
 # New named volumes inherit these directory permissions. Bind mounts must be
 # prepared by the operator for UID/GID 1000 instead.
-RUN mkdir -p /app/data /app/backups \
-    && chown node:node /app/data /app/backups \
-    && chmod 700 /app/data /app/backups
+RUN mkdir -p /app/data \
+    && chown node:node /app/data \
+    && chmod 700 /app/data
 
 USER node
 EXPOSE 3000

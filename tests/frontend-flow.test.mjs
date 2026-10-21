@@ -66,9 +66,10 @@ test('logout waits for an in-flight write and blocks new writes during the trans
 test('a stale poll response cannot roll a recently saved state backwards',async()=>{
   const app=harness(async path=>path==='/api/content'?DEFAULT_CONTENT:fixture(1));app.evaluate('serverState.version=3;state.version=3');await app.evaluate('syncRemote()');assert.equal(app.evaluate('state.version'),3);
 });
-test('history inspection uses an independent read-only model',async()=>{
-  const history=fixture(9);history.gathering={id:'old',name:'过去的聚餐',date:'2026-10-01',status:'finalized'};const app=harness(async()=>history);
-  await app.evaluate("openHistoryDetail('old')");assert.equal(app.evaluate('state.currentGathering.id'),'g1');assert.equal(app.evaluate('state.version'),1);assert.equal(app.node('history-detail-dialog').open,true);assert.match(app.node('history-detail-content').innerHTML,/历史归档 · 只读/);
+test('removed management concepts have no frontend entry points or API calls',async()=>{
+  const html=await fs.readFile(new URL('../public/index.html',import.meta.url),'utf8');
+  for(const id of ['history-nav','history-view','gatherings-tab','backups-tab','expenses-tab','ledger-tabs'])assert.ok(!html.includes(`id="${id}"`),id);
+  assert.doesNotMatch(source,/\/api\/(?:admin\/)?(?:gatherings|backups)/);
 });
 for(const field of ['amount','participants'])test(`an in-flight ${field} edit reverted to the old value is preserved and submitted`,async()=>{
   let release;const waiting=new Promise(resolve=>release=resolve),remote=fixture(),sent=[];
@@ -92,62 +93,113 @@ test('local amount cannot drop below existing advance records or poison ledger c
   await app.node('expense-grid').listeners.get('input')[0]({target:{closest:()=>input}});
   assert.equal(app.evaluate('state.expenses[0].amountCents'),100);assert.equal(app.evaluate('dirty.size'),0);assert.equal(app.evaluate("invalidInputs.has('food')"),true);
 });
-test('reviewing a remote update does not discard an unfinished gathering name form',async()=>{
-  const app=harness();app.evaluate("pendingRemote=structuredClone(state);pendingRemote.version=2;editedForms.add('gathering-edit-form')");
-  app.node('gathering-edit-form.name').value='还在修改的名称';app.evaluate('openDraftRecovery()');
-  assert.equal(app.evaluate('state.version'),1);assert.equal(app.node('gathering-edit-form.name').value,'还在修改的名称');assert.equal(app.evaluate('pendingRemote.version'),2);
+test('reviewing a remote update does not discard an unfinished member form',async()=>{
+  const app=harness();app.evaluate("pendingRemote=structuredClone(state);pendingRemote.version=2;editedForms.add('member-form')");
+  app.node('member-form.name').value='还在修改的名称';app.evaluate('openDraftRecovery()');
+  assert.equal(app.evaluate('state.version'),1);assert.equal(app.node('member-form.name').value,'还在修改的名称');assert.equal(app.evaluate('pendingRemote.version'),2);
 });
-test('a delayed poll from a previous gathering cannot replace a newly created gathering',async()=>{
+test('a delayed poll from a cleared bill cannot replace the next bill',async()=>{
   const app=harness(async path=>path==='/api/content'?DEFAULT_CONTENT:fixture(10));
-  app.evaluate("state.version=12;state.currentGathering.id='new-gathering';serverState=structuredClone(state)");await app.evaluate('syncRemote()');
-  assert.equal(app.evaluate('state.version'),12);assert.equal(app.evaluate('state.currentGathering.id'),'new-gathering');
+  app.evaluate("state.version=12;state.currentGathering.id='new-bill';serverState=structuredClone(state)");await app.evaluate('syncRemote()');
+  assert.equal(app.evaluate('state.version'),12);assert.equal(app.evaluate('state.currentGathering.id'),'new-bill');
 });
-test('bill tabs preserve pending amount input and keep the total reconciliation visible',()=>{
+test('opening a person detail preserves pending amount input and leaves totals visible',()=>{
   const app=harness();app.query('[data-amount="food"]').value='12..3';
-  app.evaluate("dirty.set('drink',1);invalidInputs.set('food','invalid');renderSummary();setLedgerTab('people');setLedgerTab('settlement')");
+  app.evaluate("dirty.set('drink',1);invalidInputs.set('food','invalid');renderSummary();renderDetail('a')");
   assert.equal(app.query('[data-amount="food"]').value,'12..3');assert.equal(app.evaluate('dirty.size'),1);assert.equal(app.evaluate('invalidInputs.size'),1);
-  assert.equal(app.evaluate('state.version'),1);assert.equal(app.node('ledger-settlement-panel').hidden,false);assert.equal(app.node('ledger-expenses-panel').hidden,true);
-  assert.equal(app.node('ledger-settlement-tab').getAttribute('aria-selected'),'true');assert.equal(app.node('ledger-settlement-tab').tabIndex,0);assert.equal(app.node('ledger-people-tab').tabIndex,-1);
+  assert.equal(app.evaluate('state.version'),1);assert.equal(app.node('people-section').hidden,false);
   assert.equal(app.node('bar-total').textContent,'¥3.00');assert.equal(app.node('bar-allocated').textContent,'¥3.00');
 });
-test('navigation breadcrumbs track the current gathering and selected management page safely',()=>{
-  const app=harness();app.evaluate("state.currentGathering.name='<周末聚餐>';renderSummary()");
-  assert.match(app.node('.breadcrumb').innerHTML,/当前聚餐/);assert.match(app.node('.breadcrumb').innerHTML,/&lt;周末聚餐&gt;/);
+test('navigation breadcrumbs track the current bill and selected management page safely',()=>{
+  const app=harness();app.evaluate("content.texts.gatheringName='<当前账单>';renderSummary()");
+  assert.match(app.node('.breadcrumb').innerHTML,/分账/);assert.match(app.node('.breadcrumb').innerHTML,/&lt;当前账单&gt;/);
   app.evaluate("user.role='admin';switchView('admin');setAdminTab('accounts')");
   assert.match(app.node('.breadcrumb').innerHTML,/管理后台/);assert.match(app.node('.breadcrumb').innerHTML,/登录账户/);
   app.evaluate("setAdminTab('security')");assert.match(app.node('.breadcrumb').innerHTML,/账户安全/);
 });
-test('summary updates keep exactly one bill panel active, and an empty bill returns to expenses',()=>{
-  const app=harness();app.evaluate("renderSummary();setLedgerTab('people');renderSummary()");
-  assert.equal(app.node('ledger-people-panel').hidden,false);assert.equal(app.node('ledger-expenses-panel').hidden,true);assert.equal(app.node('ledger-settlement-panel').hidden,true);
+test('a single page shows people with expenses and hides them when the bill is empty',()=>{
+  const app=harness();app.evaluate('renderSummary()');assert.equal(app.node('people-section').hidden,false);
+  assert.match(app.node('people-grid').innerHTML,/应付合计/);assert.doesNotMatch(app.node('people-grid').innerHTML,/已垫付/);
   app.evaluate('state.expenses=[];renderSummary()');
-  assert.equal(app.evaluate('ledgerTab'),'expenses');assert.equal(app.node('ledger-expenses-panel').hidden,false);assert.equal(app.node('ledger-people-tab').hidden,true);assert.equal(app.node('ledger-settlement-tab').hidden,true);
-  assert.equal(app.node('people-section').hidden,true);assert.equal(app.node('people-grid').innerHTML,'');
-  app.evaluate("setLedgerTab('people')");assert.equal(app.evaluate('ledgerTab'),'expenses');
+  assert.equal(app.node('people-section').hidden,true);assert.equal(app.node('people-grid').innerHTML,'');assert.equal(app.node('settlement-section').hidden,true);
+  assert.equal(app.node('bar-total').textContent,'¥0.00');assert.equal(app.node('bar-allocated').textContent,'¥0.00');
 });
-test('editors can manage fees and members but cannot open administrator settings',()=>{
+test('editors can edit dish cards and members but cannot open administrator settings',()=>{
   const app=harness();app.evaluate('renderAuth()');
-  for(const tab of ['expenses','members','security']){assert.equal(app.node(`${tab}-tab`).hidden,false);app.evaluate(`setAdminTab('${tab}')`);assert.equal(app.evaluate('adminTab'),tab);}
-  for(const tab of ['accounts','gatherings','content','backups','logs']){assert.equal(app.node(`${tab}-tab`).hidden,true);app.evaluate(`requestAdminTab('${tab}')`);assert.equal(app.evaluate('adminTab'),'security');assert.equal(app.node(`${tab}-panel`).hidden,true);}
+  for(const tab of ['members','security']){assert.equal(app.node(`${tab}-tab`).hidden,false);app.evaluate(`setAdminTab('${tab}')`);assert.equal(app.evaluate('adminTab'),tab);}
+  for(const tab of ['accounts','content','logs']){assert.equal(app.node(`${tab}-tab`).hidden,true);app.evaluate(`requestAdminTab('${tab}')`);assert.equal(app.evaluate('adminTab'),'security');assert.equal(app.node(`${tab}-panel`).hidden,true);}
 });
 test('downgrading or logging out hides the previously selected administrator panel',()=>{
   const app=harness();app.evaluate("user.role='admin';renderAuth();setAdminTab('accounts')");assert.equal(app.node('accounts-panel').hidden,false);
-  app.evaluate("user.role='editor';renderAuth()");assert.equal(app.evaluate('adminTab'),'expenses');assert.equal(app.node('accounts-panel').hidden,true);assert.equal(app.node('accounts-section').hidden,true);
-  app.evaluate('user=null;renderAuth()');for(const tab of ['expenses','members','accounts','security'])assert.equal(app.node(`${tab}-panel`).hidden,true);
+  app.evaluate("user.role='editor';renderAuth()");assert.equal(app.evaluate('adminTab'),'members');assert.equal(app.node('accounts-panel').hidden,true);assert.equal(app.node('accounts-section').hidden,true);
+  app.evaluate('user=null;renderAuth()');for(const tab of ['members','accounts','security'])assert.equal(app.node(`${tab}-panel`).hidden,true);
 });
 test('new administrator tabs and contextual shortcuts retain the page-content leave safeguard',async()=>{
   const app=harness(async path=>path==='/api/admin/accounts'?{accounts:[]}:fixture());
-  app.evaluate("user.role='admin';renderAuth();switchView('admin');setAdminTab('content');contentDraft.texts.brandName='尚未保存的新名字';requestAdminTab('expenses')");
-  assert.equal(app.node('content-leave-dialog').open,true);assert.equal(app.evaluate('adminTab'),'content');assert.equal(app.node('expenses-panel').hidden,true);
+  app.evaluate("user.role='admin';renderAuth();switchView('admin');setAdminTab('content');contentDraft.texts.brandName='尚未保存的新名字';requestAdminTab('members')");
+  assert.equal(app.node('content-leave-dialog').open,true);assert.equal(app.evaluate('adminTab'),'content');assert.equal(app.node('members-panel').hidden,true);
   app.node('content-leave-dialog').close();app.evaluate('pendingLeave=null');await app.evaluate("openAdmin('members')");
   assert.equal(app.node('content-leave-dialog').open,true);assert.equal(app.evaluate('adminTab'),'content');assert.equal(app.evaluate('contentDraft.texts.brandName'),'尚未保存的新名字');
 });
-test('bill tab keyboard navigation synchronizes selected state and administrator navigation skips forbidden tabs',()=>{
+test('administrator keyboard navigation skips forbidden settings',()=>{
   const app=harness();app.evaluate('renderAuth();renderSummary()');
   const key=(element,key)=>element.listeners.get('keydown')[0]({key,preventDefault(){}});
-  key(app.node('ledger-tabs'),'ArrowRight');assert.equal(app.evaluate('ledgerTab'),'people');assert.equal(app.node('ledger-people-tab').getAttribute('aria-selected'),'true');
-  key(app.node('ledger-tabs'),'End');assert.equal(app.evaluate('ledgerTab'),'settlement');
-  key(app.node('.admin-tabs'),'ArrowDown');assert.equal(app.evaluate('adminTab'),'members');
   key(app.node('.admin-tabs'),'ArrowDown');assert.equal(app.evaluate('adminTab'),'security');
-  key(app.node('.admin-tabs'),'Home');assert.equal(app.evaluate('adminTab'),'expenses');
+  key(app.node('.admin-tabs'),'ArrowDown');assert.equal(app.evaluate('adminTab'),'members');
+  key(app.node('.admin-tabs'),'End');assert.equal(app.evaluate('adminTab'),'security');
+  key(app.node('.admin-tabs'),'Home');assert.equal(app.evaluate('adminTab'),'members');
+});
+
+test('adding a dish submits name, cents and only selected eaters in one request',async()=>{
+  const remote=fixture();const app=harness(async(path,options)=>{
+    if(path==='/api/admin/expenses'){const body=JSON.parse(options.body);remote.version++;remote.expenses.push({id:'dish',title:body.title,amountCents:body.amountCents,participantIds:body.participantIds});return remote;}
+    return remote;
+  });
+  await app.evaluate('openExpenseEditor()');assert.equal(app.node('expense-dialog').open,true);assert.equal(app.evaluate('expenseEditorDraft.size'),2);
+  app.node('expense-edit-form.title').value=' 鱼香肉丝 ';app.node('expense-edit-form.amount').value='39.99';app.evaluate("expenseEditorDraft=new Set(['a'])");await app.evaluate('saveExpenseEditor()');
+  assert.equal(app.calls.length,1);assert.equal(app.calls[0].path,'/api/admin/expenses');assert.equal(app.calls[0].options.method,'POST');
+  assert.deepEqual(JSON.parse(app.calls[0].options.body),{version:1,title:'鱼香肉丝',amountCents:3999,participantIds:['a']});assert.equal(app.node('expense-dialog').open,false);
+  assert.equal(app.evaluate("state.expenses.find(e=>e.id==='dish').amountCents"),3999);
+});
+test('a late arriving member joins new dish defaults without joining old dishes',async()=>{
+  const app=harness();app.evaluate("state.members.push({id:'c',name:'晚到者',order:2,color:'#50837A'})");await app.evaluate('openExpenseEditor()');
+  assert.equal(app.evaluate("expenseEditorDraft.has('c')"),true);assert.equal(app.evaluate("state.expenses.some(e=>e.participantIds.includes('c'))"),false);
+  app.evaluate('renderSummary()');assert.equal(app.evaluate("ledger.people.find(p=>p.id==='c').totalCents"),0);
+});
+test('editing a dish sends all three fields atomically and preserves old values until save',async()=>{
+  const remote=fixture();const app=harness(async(path,options)=>{const body=JSON.parse(options.body);Object.assign(remote.expenses[0],body);remote.version=2;return remote;});
+  await app.evaluate("openExpenseEditor('food')");app.node('expense-edit-form.title').value='新菜名';app.node('expense-edit-form.amount').value='12.34';app.evaluate("expenseEditorDraft=new Set(['b'])");
+  assert.equal(app.evaluate('state.expenses[0].amountCents'),100);await app.evaluate('saveExpenseEditor()');
+  assert.equal(app.calls[0].path,'/api/admin/expenses/food');assert.equal(app.calls[0].options.method,'PATCH');assert.deepEqual(JSON.parse(app.calls[0].options.body),{version:1,title:'新菜名',amountCents:1234,participantIds:['b']});
+});
+test('a dish without selected eaters cannot save a positive amount',async()=>{
+  const app=harness();await app.evaluate('openExpenseEditor()');app.node('expense-edit-form.title').value='这道我没吃';app.node('expense-edit-form.amount').value='10';app.evaluate('expenseEditorDraft.clear()');await app.evaluate('saveExpenseEditor()');
+  assert.equal(app.calls.length,0);assert.equal(app.node('expense-dialog').open,true);assert.equal(app.node('expense-edit-form.amount').value,'10');assert.match(app.node('expense-edit-error').textContent,/勾选/);
+});
+test('a conflicting dish save keeps the full modal input while deferring remote replacement',async()=>{
+  const app=harness(async()=>({status:409,body:{message:'conflict',state:fixture(2)}}));await app.evaluate("openExpenseEditor('food')");
+  app.node('expense-edit-form.title').value='未保存的菜名';app.node('expense-edit-form.amount').value='12.30';app.evaluate("expenseEditorDraft=new Set(['b'])");await app.evaluate('saveExpenseEditor()');
+  assert.equal(app.node('expense-dialog').open,true);assert.equal(app.node('expense-edit-form.title').value,'未保存的菜名');assert.equal(app.node('expense-edit-form.amount').value,'12.30');assert.equal(app.evaluate("expenseEditorDraft.has('b')"),true);
+  assert.equal(app.evaluate('state.version'),1);assert.equal(app.evaluate('recovery.remote.version'),2);assert.match(app.node('expense-edit-error').textContent,/输入已保留/);
+});
+test('a reset uses the confirmed version, keeps members and removes fees and advances',async()=>{
+  const remote=fixture(2);remote.currentGathering.id='next';remote.expenses=[];remote.advances=[];
+  const app=harness(async()=>remote);app.evaluate("user.role='admin';state.advances=[{id:'paid',expenseId:'food',memberId:'a',amountCents:100}]");
+  await app.evaluate('openResetBill()');assert.equal(app.node('reset-bill-dialog').open,true);assert.match(app.node('reset-bill-summary').textContent,/2 位成员/);assert.match(app.node('reset-bill-summary').textContent,/不能撤销/);
+  await app.evaluate('confirmResetBill()');assert.equal(app.calls[0].path,'/api/admin/bill/reset');assert.deepEqual(JSON.parse(app.calls[0].options.body),{version:1});
+  assert.equal(app.evaluate('state.members.length'),2);assert.equal(app.evaluate('state.expenses.length'),0);assert.equal(app.evaluate('state.advances.length'),0);assert.equal(app.evaluate('state.currentGathering.id'),'next');assert.equal(app.node('people-section').hidden,true);
+});
+test('only administrators can reset a bill and a conflict never silently reconfirms new data',async()=>{
+  const app=harness(async()=>({status:409,body:{message:'conflict',state:fixture(2)}}));await app.evaluate('openResetBill()');assert.equal(app.node('reset-bill-dialog').open,false);assert.equal(app.calls.length,0);
+  app.evaluate("user.role='admin'");await app.evaluate('openResetBill()');await app.evaluate('confirmResetBill()');assert.equal(app.node('reset-bill-dialog').open,true);assert.equal(app.evaluate('resetBillVersion'),1);assert.match(app.node('reset-bill-error').textContent,/取消后核对/);assert.equal(app.evaluate('state.version'),1);
+});
+test('an expense modal cannot submit into a different cleared bill',async()=>{
+  const app=harness();await app.evaluate('openExpenseEditor()');app.node('expense-edit-form.title').value='上一顿的菜';app.node('expense-edit-form.amount').value='10';app.evaluate("state.currentGathering.id='next'");await app.evaluate('saveExpenseEditor()');
+  assert.equal(app.calls.length,0);assert.equal(app.node('expense-dialog').open,true);assert.match(app.node('expense-edit-error').textContent,/已被清空/);
+});
+
+test('the primary add-dish action is visible after authentication and in browse mode',()=>{
+  const app=harness();app.node('add-expense').hidden=true;app.evaluate('renderAuth()');
+  assert.equal(app.node('add-expense').hidden,false);assert.equal(app.node('add-expense').disabled,false);
+  app.evaluate('user=null;renderAuth()');assert.equal(app.node('add-expense').hidden,false);assert.equal(app.node('add-expense').disabled,false);
 });
