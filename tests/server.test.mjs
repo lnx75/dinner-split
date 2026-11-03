@@ -45,7 +45,10 @@ async function fixture(t, { demo = true } = {}) {
     await new Promise(resolve => server.close(resolve));
     await fs.rm(temporary, { recursive: true, force: true });
   });
+  let readAuth;
   const request = async (route, { method = 'GET', body, bytes, auth, origin = base, headers = {} } = {}) => {
+    if(['GET','HEAD'].includes(method)&&(/^\/api\/(state|content)$/.test(route)||route.startsWith('/media/'))&&!auth)auth=readAuth||await login();
+
     const response = await fetch(base + route, {
       method,
       headers: {
@@ -63,7 +66,7 @@ async function fixture(t, { demo = true } = {}) {
   const login = async (username = 'admin', password = 'test-only-admin-password') => {
     const { response, data } = await request('/api/login', { method: 'POST', body: { username, password } });
     assert.equal(response.status, 200, data.message);
-    return { ...data, cookie: response.headers.get('set-cookie').split(';')[0], setCookie: response.headers.get('set-cookie') };
+    return readAuth = { ...data, cookie: response.headers.get('set-cookie').split(';')[0], setCookie: response.headers.get('set-cookie') };
   };
   const restart = async update => {
     await new Promise(resolve => server.close(resolve));
@@ -80,7 +83,7 @@ async function fixture(t, { demo = true } = {}) {
   return { request, login, restart, dataDir, publicDir, temporary, get server() { return server; }, get base() { return base; } };
 }
 
-test('public view, authentication, CSRF, concurrency, persistence and admin boundaries', async t => {
+test('authenticated view, authentication, CSRF, concurrency, persistence and admin boundaries', async t => {
   const { request, login, dataDir, publicDir, temporary } = await fixture(t);
   let state = (await request('/api/state')).data;
   assert.equal(state.version, 1);
@@ -167,9 +170,9 @@ test('public view, authentication, CSRF, concurrency, persistence and admin boun
   assert.deepEqual((await request('/api/session', { auth: admin })).data, { user: null });
 });
 
-test('login rate limit blocks guessing after ten failed attempts', async t => {
+test('login rate limit blocks guessing after five failed attempts', async t => {
   const { request } = await fixture(t);
-  for (let i = 0; i < 10; i += 1) {
+  for (let i = 0; i < 5; i += 1) {
     assert.equal((await request('/api/login', { method: 'POST', body: { username: 'admin', password: `wrong-${i}` } })).response.status, 401);
   }
   const blocked = await request('/api/login', { method: 'POST', body: { username: 'admin', password: 'test-only-admin-password' } });
@@ -206,7 +209,7 @@ test('logging out while a request body is arriving prevents its delayed mutation
   assert.equal((await request('/api/logout', { method: 'POST', auth: admin })).response.status, 200);
   upload.end('99999,"participantIds":["lin"],"version":1}');
   assert.equal(await finished, 401);
-  assert.equal((await request('/api/state')).data.expenses[0].amountCents, 36000);
+  assert.equal((await request('/api/state', {auth:await login()})).data.expenses[0].amountCents, 36000);
 });
 
 test('a fresh server instance reloads saved data and hashed accounts', async t => {
@@ -221,7 +224,7 @@ test('a fresh server instance reloads saved data and hashed accounts', async t =
   await new Promise(resolve => second.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => second.close(resolve)));
   const base = `http://127.0.0.1:${second.address().port}`;
-  const state = await (await fetch(base + '/api/state')).json();
+  const state = await (await fetch(base + '/api/state', {headers:{Cookie:admin.cookie}})).json();
   assert.equal(state.version, 2);
   assert.equal(state.expenses.find(expense => expense.id === 'parking').amountCents, 2001);
   const response = await fetch(base + '/api/login', {

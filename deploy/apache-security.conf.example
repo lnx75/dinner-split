@@ -1,0 +1,16 @@
+# Apply ServerTokens/ServerSignature in the global Apache configuration.
+ServerTokens Prod
+ServerSignature Off
+SSLProtocol -all +TLSv1.2 +TLSv1.3
+
+# Also set the protocol policy inside every HTTPS VirtualHost.
+# SSLProtocol -all +TLSv1.2 +TLSv1.3
+# Require mod_headers. HSTS must be emitted only over HTTPS.
+# Enable includeSubDomains only when all subdomains use HTTPS.
+<If "%{HTTPS} == 'on'">
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"
+</If>
+
+# HSTS is domain-only: browsers do not store an HSTS policy for IP literals.
+# Preserve the proxy Host and overwrite trusted client-IP headers at the edge.

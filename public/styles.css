@@ -487,3 +487,5 @@ main{max-width:1280px;padding:0 36px}
   .bill-extra>summary{padding:13px;font-size:10px}
   .bill-extra>summary .optional-label{font-size:8px}
 }
+
+.access-view{max-width:600px;margin:80px auto;text-align:center;padding:40px 24px;background:#fff;border:1px solid var(--line);border-radius:16px}.access-symbol{display:inline-flex;align-items:center;justify-content:center;width:54px;height:54px;border-radius:16px;background:#edf3e8;color:#56764c}.access-symbol svg{width:26px;height:26px}.access-view h1{font-size:25px;margin:23px 0 14px}.access-view p{font-size:13px;line-height:1.9;color:#7d8a73;margin-bottom:28px}.access-view .form-error{margin-top:18px}@media(max-width:720px){.access-view{margin:34px auto;padding:32px 18px}.access-view h1{font-size:21px}}

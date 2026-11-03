@@ -1,6 +1,6 @@
 {
   "name": "dinner-split",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "private": true,
   "type": "module",
   "description": "Self-hosted per-dish dinner expense splitting with integer-cent calculations, member selection and Docker deployment",

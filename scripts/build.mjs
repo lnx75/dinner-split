@@ -6,9 +6,9 @@ import { checkVersion } from './check-version.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sourcePaths = [
-  'server.mjs', 'auth.mjs', 'public', 'scripts', 'tests', 'package.json',
+  'server.mjs', 'auth.mjs', 'login-limiter.mjs', 'public', 'scripts', 'tests', 'package.json',
   'README.md', 'VERSIONING.md', 'LICENSE', 'SECURITY.md',
-  'Dockerfile', 'compose.yaml', '.dockerignore', '.env.example', '.gitignore',
+  'deploy', 'Dockerfile', 'compose.yaml', '.dockerignore', '.env.example', '.gitignore',
   '启动分账工具.command', '启动分账工具.bat',
 ];
 await checkVersion();

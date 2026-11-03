@@ -4,6 +4,7 @@
 !package.json
 !server.mjs
 !auth.mjs
+!login-limiter.mjs
 !public/
 !public/**
 !scripts/

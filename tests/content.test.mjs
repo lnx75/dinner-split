@@ -38,7 +38,10 @@ async function fixture(t) {
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await fs.rm(temporary, { recursive: true, force: true });
   });
+  let readAuth;
   const request = async (route, { method = 'GET', body, bytes, auth, headers = {} } = {}) => {
+    if(['GET','HEAD'].includes(method)&&(/^\/api\/(state|content)$/.test(route)||route.startsWith('/media/'))&&!auth)auth=readAuth||await login();
+
     const response = await fetch(base + route, {
       method,
       headers: {
@@ -56,7 +59,7 @@ async function fixture(t) {
   const login = async (username = 'admin', password = 'test-only-admin-password') => {
     const { response, data } = await request('/api/login', { method: 'POST', body: { username, password } });
     assert.equal(response.status, 200, data.message);
-    return { ...data, cookie: response.headers.get('set-cookie').split(';')[0] };
+    return readAuth = { ...data, cookie: response.headers.get('set-cookie').split(';')[0] };
   };
   const restart = async update => {
     await new Promise(resolve => server.close(resolve));
@@ -71,7 +74,7 @@ async function fixture(t) {
   return { request, login, restart, dataDir, publicDir, get server() { return server; }, get base() { return base; } };
 }
 
-test('page content is public, while only administrators with CSRF may edit or upload', async t => {
+test('page content requires login, while only administrators with CSRF may edit or upload', async t => {
   const { request, login } = await fixture(t);
   const content = (await request('/api/content')).data;
   assert.deepEqual(content, DEFAULT_CONTENT);

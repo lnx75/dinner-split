@@ -23,14 +23,17 @@ async function fixture(t) {
   async function start() { server = await createApp({ initialAdminPassword: 'test-only-admin-password', dataDir }); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); base = `http://127.0.0.1:${server.address().port}`; }
   await start();
   t.after(async () => { await new Promise(resolve => server.close(resolve)); await fs.rm(dataDir, { recursive: true, force: true }); });
+  let readAuth;
   async function request(route, { method = 'GET', body, auth, headers = {} } = {}) {
+
+    if(['GET','HEAD'].includes(method)&&(/^\/api\/(state|content)$/.test(route)||route.startsWith('/media/'))&&!auth)auth=readAuth||await login();
     const response = await fetch(base + route, { method, headers: { ...(method !== 'GET' ? { Origin: base, 'Content-Type': 'application/json' } : {}), ...(auth ? { Cookie: auth.cookie, 'X-CSRF-Token': auth.csrfToken } : {}), ...headers }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: response.status, data: await response.json(), headers: response.headers };
   }
   async function login(username = 'admin', password = 'test-secret-password') {
     const result = await request('/api/login', { method: 'POST', body: { username, password } });
     assert.equal(result.status, 200, result.data.message);
-    return { ...result.data, cookie: result.headers.get('set-cookie').split(';')[0] };
+    return readAuth = { ...result.data, cookie: result.headers.get('set-cookie').split(';')[0] };
   }
   const read = async () => JSON.parse(await fs.readFile(path.join(dataDir, 'state.json'), 'utf8'));
   const state = async () => (await request('/api/state')).data;

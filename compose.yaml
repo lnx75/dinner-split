@@ -1,6 +1,6 @@
 services:
   app:
-    image: ${DINNER_SPLIT_IMAGE:-dinner-split:1.1.4}
+    image: ${DINNER_SPLIT_IMAGE:-dinner-split:1.1.5}
     build:
       context: .
     init: true

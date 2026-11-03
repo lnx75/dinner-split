@@ -52,10 +52,10 @@ test('a 409 preserves both amount drafts and their original baselines',async()=>
   await assert.rejects(app.evaluate('flushSaves()'));
   assert.equal(app.evaluate('dirty.size'),2);assert.equal(app.evaluate('recovery.drafts.length'),2);assert.equal(app.evaluate('recovery.drafts[0].base.amountCents'),100);assert.equal(app.evaluate('recovery.drafts[1].amountCents'),456);assert.equal(app.evaluate('state.expenses[0].amountCents'),123);
 });
-test('invalid input no longer prevents logout; user explicitly discards, then server state replaces drafts',async()=>{
+test('invalid input no longer prevents logout; user explicitly discards, then private data is erased',async()=>{
   const app=harness(async path=>path==='/api/logout'?{}:fixture());app.query('[data-amount="food"]').value='bad';app.evaluate("invalidInputs.set('food','invalid');contentDraft.texts.brandName='未保存文字'");
   await app.evaluate('logout()');assert.equal(app.node('logout-dialog').open,true);assert.equal(app.calls.length,0);assert.equal(app.evaluate('user.username'),'editor');
-  await app.evaluate('logout(true)');assert.equal(app.evaluate('user'),null);assert.equal(app.evaluate('invalidInputs.size'),0);assert.equal(app.evaluate('pageContentDirty()'),false);assert.equal(app.evaluate('state.expenses[0].amountCents'),100);assert.equal(app.calls.filter(c=>c.path==='/api/logout').length,1);
+  await app.evaluate('logout(true)');assert.equal(app.evaluate('user'),null);assert.equal(app.evaluate('invalidInputs.size'),0);assert.equal(app.evaluate('pageContentDirty()'),false);assert.equal(app.evaluate('state'),null);assert.equal(app.node('access-view').hidden,false);assert.equal(app.calls.filter(c=>c.path==='/api/logout').length,1);
 });
 test('logout waits for an in-flight write and blocks new writes during the transition',async()=>{
   let release;const waiting=new Promise(resolve=>release=resolve);const app=harness(async path=>path==='/api/pending'?waiting:path==='/api/logout'?{}:fixture());
@@ -202,4 +202,19 @@ test('the primary add-dish action is visible after authentication and in browse 
   const app=harness();app.node('add-expense').hidden=true;app.evaluate('renderAuth()');
   assert.equal(app.node('add-expense').hidden,false);assert.equal(app.node('add-expense').disabled,false);
   app.evaluate('user=null;renderAuth()');assert.equal(app.node('add-expense').hidden,false);assert.equal(app.node('add-expense').disabled,false);
+});
+
+test('anonymous startup requests only the session and shows a login gate without fetching private data',async()=>{
+ const app=harness(async path=>path==='/api/session'?{user:null}:fixture());await app.evaluate('init()');
+ assert.deepEqual(app.calls.map(c=>c.path),['/api/session']);assert.equal(app.evaluate('state'),null);assert.equal(app.node('access-view').hidden,false);assert.equal(app.node('ledger-view').hidden,true);assert.equal(app.node('balance-bar').hidden,true);
+});
+test('private data is erased on session expiry, and an old in-flight response cannot restore it after logout',async()=>{
+ let release;const waiting=new Promise(resolve=>release=resolve);const app=harness(async path=>path==='/api/content'?{status:401,body:{message:'expired'}}:waiting);
+ const request=app.evaluate("api('/api/state')");await assert.rejects(app.evaluate("api('/api/content')"));
+ assert.equal(app.evaluate('state'),null);assert.equal(app.evaluate('serverState'),null);assert.equal(app.node('people-grid').innerHTML,'');assert.equal(app.evaluate('contentLoaded'),false);
+ release(fixture(2));await assert.rejects(request);assert.equal(app.evaluate('state'),null);
+});
+test('revoked account and password changes clear cached member, amount, content and image data',async()=>{
+ const app=harness();app.node('admin-members').innerHTML='private member';app.node('detail-content').innerHTML='private bill';app.evaluate("content.texts.brandName='private name';content.images.sidebar.src='/media/private.png';accountSessionEnded()");
+ assert.equal(app.evaluate('state'),null);assert.equal(app.evaluate('accounts.length'),0);assert.equal(app.node('admin-members').innerHTML,'');assert.equal(app.node('detail-content').innerHTML,'');assert.equal(app.evaluate('content.texts.brandName'),DEFAULT_CONTENT.texts.brandName);
 });

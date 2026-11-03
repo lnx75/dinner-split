@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createLoginLimiter } from './login-limiter.mjs';
 import { isIP } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -548,7 +549,7 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
     state = await seedState(initialAdminPassword);
     await persist(state);
   }
-  const loginAttempts = new Map();
+  const loginLimiter = await createLoginLimiter(dataDir);
   const passwordAttempts = new Map();
   const dummyAccount = await passwordRecord(randomBytes(24).toString('hex'));
   let mutationQueue = Promise.resolve();
@@ -635,14 +636,16 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('X-Frame-Options', 'DENY');
     response.setHeader('Referrer-Policy', 'same-origin');
+    response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     try {
       const url = new URL(request.url, 'http://localhost');
       const pathname = url.pathname;
       const method = request.method;
       if (!['GET', 'HEAD'].includes(method)) checkOrigin(request, publicOrigin);
-      if (pathname === '/api/state' && method === 'GET') return send(response, 200, publicState(state));
-      if (pathname === '/api/content' && method === 'GET') return send(response, 200, state.content);
+      if (pathname === '/api/health' && method === 'GET') return send(response, 200, { ok: true });
+      if (pathname === '/api/state' && method === 'GET') { authorize(request); return send(response, 200, publicState(state)); }
+      if (pathname === '/api/content' && method === 'GET') { authorize(request); return send(response, 200, state.content); }
       if (pathname === '/api/session' && method === 'GET') {
         const auth = getSession(request);
         return send(response, 200, auth ? { user: publicAccount(auth.user), csrfToken: auth.session.csrfToken } : { user: null });
@@ -652,23 +655,12 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
         const username = typeof body.username === 'string' ? body.username.trim() : '';
         const password = typeof body.password === 'string' ? body.password : '';
         const key = requestIp(request, trustProxy);
-        let attempts = loginAttempts.get(key);
-        if (!attempts || attempts.resetAt <= Date.now()) {
-          attempts = { count: 0, blockedLogged: false, resetAt: Date.now() + 15 * 60 * 1000 };
-          loginAttempts.set(key, attempts);
+        const reservation = await loginLimiter.reserve(key, username.slice(0, 80));
+        if (!reservation.allowed) {
+          if (reservation.logBlocked) await logFailure(request, username, '登录失败：尝试次数过多，已暂时限制登录');
+          response.setHeader('Retry-After', String(reservation.retryAfter));
+          throw new ApiError(429, 'too_many_attempts', '登录尝试次数过多，请稍后重试。');
         }
-        if (attempts.count >= 10) {
-          // One limit event per IP/window prevents rejected traffic from rewriting
-          // the entire state and evicting useful audit history indefinitely.
-          if (!attempts.blockedLogged) {
-            attempts.blockedLogged = true;
-            try { await logFailure(request, username, '登录失败：尝试次数过多，已暂时限制登录'); }
-            catch (error) { attempts.blockedLogged = false; throw error; }
-          }
-          response.setHeader('Retry-After', String(Math.ceil((attempts.resetAt - Date.now()) / 1000)));
-          throw new ApiError(429, 'too_many_attempts', '登录尝试次数过多，请 15 分钟后重试。');
-        }
-        attempts.count += 1;
         if (username.length > 80 || password.length > 256) {
           await logFailure(request, username, '登录失败：账户或密码不正确');
           throw new ApiError(401, 'invalid_credentials', '账户或密码不正确。');
@@ -681,6 +673,7 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
           await logFailure(request, username, '登录失败：账户或密码不正确');
           throw new ApiError(401, 'invalid_credentials', '账户或密码不正确。');
         }
+        await loginLimiter.succeeded(reservation.receipt);
         const { token, claims } = issueJwt(signingKey, account.id);
         const csrfToken = randomBytes(24).toString('hex');
         const requireLoginAccount = current => {
@@ -696,9 +689,7 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
           next.authSessions = pruneSessions(next.authSessions, next.accounts);
           appendAudit(next, request, { user: latest }, 'login.succeeded', '登录成功');
           return publicAccount(latest);
-        }, () => requireLoginAccount(state), () => {
-          loginAttempts.delete(key);
-        });
+        }, () => requireLoginAccount(state));
         return send(response, 200, { user, csrfToken }, { 'Set-Cookie': cookie(token, request, publicOrigin) });
       }
       if (pathname === '/api/logout' && method === 'POST') {
@@ -1085,8 +1076,9 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
       if (pathname.startsWith('/api/')) throw new ApiError(404, 'not_found', '接口不存在。');
       if (!['GET', 'HEAD'].includes(method)) throw new ApiError(405, 'method_not_allowed', '不支持此请求方式。');
       if (pathname.startsWith('/media/')) {
+        authorize(request);
         const { filename, size } = await mediaFile(pathname.slice('/media/'.length));
-        response.writeHead(200, { 'Content-Type': MIME[path.extname(filename)], 'Content-Length': size, 'Cache-Control': 'public, max-age=31536000, immutable' });
+        response.writeHead(200, { 'Content-Type': MIME[path.extname(filename)], 'Content-Length': size, 'Cache-Control': 'private, no-store' });
         return response.end(method === 'HEAD' ? undefined : await fs.readFile(filename));
       }
       let decoded;
@@ -1100,7 +1092,7 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
       if (!stat?.isFile()) throw new ApiError(404, 'not_found', '文件不存在。');
       const real = await fs.realpath(filename);
       if (!real.startsWith(await fs.realpath(publicDir) + path.sep)) throw new ApiError(404, 'not_found', '文件不存在。');
-      response.writeHead(200, { 'Content-Type': MIME[path.extname(filename)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+      response.writeHead(200, { 'Content-Type': MIME[path.extname(filename)] || 'application/octet-stream', 'Cache-Control': path.extname(filename) === '.html' ? 'no-store' : 'no-cache' });
       response.end(method === 'HEAD' ? undefined : await fs.readFile(filename));
     } catch (error) {
       if (response.headersSent) return response.end();
@@ -1116,7 +1108,7 @@ export async function createApp({ initialAdminPassword = process.env.ADMIN_PASSW
     if (state.authSessions.some(session => session.expiresAt <= Math.floor(now / 1000))) {
       mutate(() => {}).catch(error => console.error('Session cleanup failed:', error.message));
     }
-    for (const attemptsMap of [loginAttempts, passwordAttempts]) for (const [key, attempts] of attemptsMap) if (attempts.resetAt <= now) attemptsMap.delete(key);
+    for (const attemptsMap of [passwordAttempts]) for (const [key, attempts] of attemptsMap) if (attempts.resetAt <= now) attemptsMap.delete(key);
   }, 60_000);
   cleanup.unref();
   server.on('close', () => clearInterval(cleanup));

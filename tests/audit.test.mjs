@@ -22,7 +22,10 @@ async function fixture(t, options = {}) {
     await new Promise(resolve => server.close(resolve));
     await fs.rm(dataDir, { recursive: true, force: true });
   });
+  let readAuth;
   async function request(route, { method = 'GET', body, bytes, auth, headers = {} } = {}) {
+
+    if(['GET','HEAD'].includes(method)&&(/^\/api\/(state|content)$/.test(route)||route.startsWith('/media/'))&&!auth)auth=readAuth||await login();
     const response = await fetch(base + route, {
       method, headers: {
         ...(method !== 'GET' ? { Origin: base, 'Content-Type': bytes ? 'image/png' : 'application/json' } : {}),
@@ -34,7 +37,7 @@ async function fixture(t, options = {}) {
   async function login(username = 'admin', password = 'test-only-admin-password', headers) {
     const result = await request('/api/login', { method: 'POST', body: { username, password }, headers });
     assert.equal(result.status, 200, result.data.message);
-    return { ...result.data, cookie: result.headers.get('set-cookie').split(';')[0] };
+    return readAuth = { ...result.data, cookie: result.headers.get('set-cookie').split(';')[0] };
   }
   const read = async () => JSON.parse(await fs.readFile(path.join(dataDir, 'state.json'), 'utf8'));
   async function restart(update) {
@@ -117,12 +120,12 @@ test('audit events persist, do not leak secrets, paginate stably and never chang
   const all = (await request('/api/admin/logs', { auth: admin })).data;
   const originalIds = all.logs.map(event => event.id);
   assert.equal(new Set(originalIds).size, originalIds.length);
-  assert.deepEqual(all.logs.map(event => event.action), ['account.deleted', 'image.uploaded', 'content.updated', 'account.created', 'login.succeeded', 'login.failed']);
+  assert.deepEqual(all.logs.map(event => event.action), ['account.deleted', 'image.uploaded', 'content.updated', 'account.created', 'login.succeeded', 'login.failed', 'login.succeeded']);
   assert.ok(all.logs.every(event => Object.keys(event).sort().join(',') === 'action,createdAt,id,ip,loginIp,role,summary,username'));
   assert.ok(all.logs.every(event => !Number.isNaN(Date.parse(event.createdAt))));
   assert.ok(all.logs.every(event => event.ip === '127.0.0.1' && event.loginIp === '127.0.0.1'));
-  assert.equal(all.logs.at(-1).username, 'nonexistent');
-  assert.equal(all.logs.at(-1).role, null);
+  assert.equal(all.logs.find(event=>event.action==='login.failed').username, 'nonexistent');
+  assert.equal(all.logs.find(event=>event.action==='login.failed').role, null);
   const serialized = JSON.stringify(all);
   for (const secret of ['test-only-admin-password', 'wrong-secret-never-store', 'editor-secret-never-store', admin.csrfToken, admin.cookie.split('=')[1], 'csrfToken', 'salt', 'hash', 'password']) assert.equal(serialized.includes(secret), false, secret);
   const publicState = (await request('/api/state')).data;
@@ -138,9 +141,11 @@ test('audit events persist, do not leak secrets, paginate stably and never chang
   const page2 = (await request(`/api/admin/logs?limit=2&before=${page1.nextBefore}`, { auth: admin })).data;
   assert.deepEqual(page2.logs.map(event => event.id), originalIds.slice(2, 4));
   const page3 = (await request(`/api/admin/logs?limit=2&before=${page2.nextBefore}`, { auth: admin })).data;
-  assert.deepEqual(page3.logs.map(event => event.id), originalIds.slice(4));
-  assert.equal(page3.hasMore, false);
-  assert.equal(page3.nextBefore, null);
+  assert.deepEqual(page3.logs.map(event => event.id), originalIds.slice(4, 6));
+  assert.equal(page3.hasMore, true);
+  const page4=(await request(`/api/admin/logs?limit=2&before=${page3.nextBefore}`,{auth:admin})).data;
+  assert.deepEqual(page4.logs.map(event=>event.id),originalIds.slice(6));
+  assert.equal(page4.hasMore,false);assert.equal(page4.nextBefore,null);
   for (const query of ['limit=0', 'limit=101', 'limit=1.5', 'limit=1&limit=2', 'before=bad', `before=${randomUUID()}`, 'extra=true']) {
     assert.equal((await request('/api/admin/logs?' + query, { auth: admin })).status, 422, query);
   }
@@ -261,7 +266,7 @@ test('normal and oversized login failures share the IP budget and repeated 429 r
   const { request, login, read } = await fixture(t, { trustProxy: 'loopback' });
   const admin = await login();
   for (const [ip, oversized] of [['203.0.113.31', false], ['203.0.113.32', true]]) {
-    for (let i = 0; i < 10; i += 1) {
+    for (let i = 0; i < 5; i += 1) {
       const body = oversized
         ? i % 2 ? { username: 'admin', password: 'p'.repeat(257) } : { username: 'u'.repeat(81), password: 'wrong' }
         : { username: `unknown-${i}`, password: 'wrong' };
@@ -276,8 +281,8 @@ test('normal and oversized login failures share the IP budget and repeated 429 r
     assert.ok(repeated.every(result => result.status === 429));
     assert.deepEqual(await read(), beforeRepeated);
     const logs = (await request('/api/admin/logs', { auth: admin })).data.logs.filter(event => event.ip === ip);
-    assert.equal(logs.length, 11);
-    assert.equal(logs.filter(event => event.summary === '登录失败：账户或密码不正确').length, 10);
+    assert.equal(logs.length, 6);
+    assert.equal(logs.filter(event => event.summary === '登录失败：账户或密码不正确').length, 5);
     assert.equal(logs.filter(event => event.summary.includes('暂时限制')).length, 1);
   }
 });

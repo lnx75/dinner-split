@@ -33,6 +33,7 @@ let content = copyContent(DEFAULT_CONTENT), contentDraft = copyContent(DEFAULT_C
 let adminTab = 'members', contentSaving = false, contentSaveFailed = false, contentConflict = null, pendingLeave = null, uploadGeneration = 0;
 const contentUploads = new Set();
 let contentPreviewField = 'heroTitleLine1';
+let authGeneration = 0;
 let state = null, user = null, csrfToken = '', ledger = null, accounts = [], currentView = 'ledger';
 let saveTimer, toastTimer, savingPromise = null, saveFailed = false, detailMemberId = null, editMemberId = null;
 const dirty = new Map(), revisions = new Map(), invalidInputs = new Map();
@@ -65,14 +66,16 @@ async function trackedFetch(path,options={}) {
   try{return await request;}finally{pendingWrites.delete(request);}
 }
 async function api(path, { method = 'GET', body } = {}) {
+  const generation=authGeneration;
   let response;
   try {
     response = await trackedFetch(path, { method, credentials:'same-origin', headers:{ ...(body ? {'Content-Type':'application/json'} : {}), ...(method !== 'GET' ? {'x-csrf-token':csrfToken} : {}) }, ...(body ? {body:JSON.stringify(body)} : {}) });
   } catch(error) { if(quitting)throw error;throw Object.assign(new Error('连接中断，修改尚未保存。请检查网络后重试。'), {status:0}); }
   const result = await response.json().catch(() => ({}));
+  if(generation!==authGeneration)throw Object.assign(new Error('登录状态已改变，请重试。'),{status:0});
   if (!response.ok) {
     const error = Object.assign(new Error(result.message || '操作未完成，请稍后重试。'), {status:response.status, data:result});
-    if (response.status === 401 && path !== '/api/login') { user = null; csrfToken = ''; renderAuth(); }
+    if (response.status === 401 && path !== '/api/login') { sealPrivateView(); }
     throw error;
   }
   return result;
@@ -112,7 +115,7 @@ function openDraftRecovery() {
   }).join('');showError('draft-error','');if(!$('draft-dialog').open)$('draft-dialog').showModal();
 }
 async function syncRemote(manual=false) {
-  if(!state||syncRunning||document.hidden&&!manual||quitting)return;
+  if(!user||!state||syncRunning||document.hidden&&!manual||quitting)return;
   syncRunning=true;renderSync();
   try{
     const [remote,remoteContent]=await Promise.all([api('/api/state'),api('/api/content')]);
@@ -138,7 +141,10 @@ function renderAuth() {
   if(!canAccessAdminTab(adminTab))adminTab='members';
   renderAdminTabs();
   document.querySelectorAll('[data-admin-shortcut]').forEach(button=>{button.hidden=!canManageLedger();});
-  $('guest-banner').hidden = Boolean(user);
+  $('guest-banner').hidden = true;
+  $('access-view').hidden=Boolean(user)||currentView==='releases';
+  $('ledger-view').hidden=!user||currentView!=='ledger';
+  $('balance-bar').hidden=!user||!state;
   $('auth-button').innerHTML = `${icon(user ? 'people' : 'lock')}<span>${user ? `${esc(user.username)} · 退出` : '登录编辑'}</span>`;
   $('expense-edit-hint').textContent = user?'金额和参与人修改后自动保存':'登录后可编辑';
   $('admin-nav').querySelector('.nav-lock').innerHTML = icon(canManageLedger() ? 'arrow' : 'lock');
@@ -237,7 +243,7 @@ async function flushSaves() {
         saveFailed=true;
         if(error.status===409&&error.data.state)receiveConflict(error.data.state);
         else{
-          const notice=error.status===401?'登录已过期。草稿仍保留，重新登录后可比较最新账单再恢复。':`${error.message} 当前输入仍保留。`;
+          const notice=error.status===401?'登录已过期，私有账单已从当前页面清除。请重新登录。':`${error.message} 当前输入仍保留。`;
           $('global-error').innerHTML=`${esc(notice)} <button class="save-retry" id="retry-save">${error.status===401?'重新登录':'重试保存'}</button>`;$('global-error').hidden=false;saveStatus('尚未保存','error');renderSummary();
         }
         throw error;
@@ -275,10 +281,12 @@ function switchView(view) {
   if(!['ledger','admin','releases'].includes(view)||(view==='admin'&&!canManageLedger()))return;
   currentView=view;
   ['ledger','admin','releases'].forEach(key=>{
-    $(`${key}-view`).hidden=view!==key;
+    $(`${key}-view`).hidden=view!==key||(key!=='releases'&&!user);
     $(`${key}-nav`).classList.toggle('active',view===key);
     if(view===key)$(`${key}-nav`).setAttribute('aria-current','page');else $(`${key}-nav`).removeAttribute('aria-current');
   });
+  $('access-view').hidden=Boolean(user)||view==='releases';
+  $('balance-bar').hidden=!user||!state;
   renderBreadcrumb();if(view==='releases')loadReleases();window.scrollTo({top:0,behavior:'instant'});
 }
 function releaseDate(value) {
@@ -510,7 +518,7 @@ async function saveContent(confirmedVersion=null) {
     if(error.status===409&&error.data.content){contentConflict=copyContent(error.data.content);$('content-conflict').hidden=false;showError('content-editor-error','');toast('页面已在其他窗口更新，请选择如何处理草稿');$('content-conflict').scrollIntoView({block:'nearest',behavior:'instant'});}
     else {
       showError('content-editor-error',`${error.message} 当前草稿已保留。`);toast('页面尚未保存，当前草稿已保留');
-      if(error.status===401){$('content-load-message').textContent='登录已过期。页面草稿仍保留在本窗口，重新登录并进入「页面编辑」后可继续保存。';$('retry-content').hidden=true;$('content-load-error').hidden=false;}
+      if(error.status===401){$('content-load-message').textContent='登录已失效，私有页面内容已清除。请重新登录。';$('retry-content').hidden=true;$('content-load-error').hidden=false;}
     }
   } finally {contentSaving=false;updateContentStatus();}
 }
@@ -536,7 +544,7 @@ async function uploadContentImage(key,file,input) {
   } catch(error) {
     if(generation!==uploadGeneration)return;
     showError('content-editor-error',`${error.message||'图片无法读取，请换一张有效图片。'} 原有草稿已保留。`);toast('图片未能上传，原有草稿已保留');
-    if(error.status===401){user=null;csrfToken='';renderAuth();$('content-load-message').textContent='登录已过期，页面草稿仍保留。重新登录后可以继续上传并保存。';$('retry-content').hidden=true;$('content-load-error').hidden=false;}
+    if(error.status===401){user=null;csrfToken='';renderAuth();$('content-load-message').textContent='登录已失效，私有页面内容已清除。请重新登录。';$('retry-content').hidden=true;$('content-load-error').hidden=false;}
   } finally {
     if(generation===uploadGeneration){contentUploads.delete(key);input.value='';$(`upload-label-${key}`).textContent='选择图片';updateContentStatus();}
   }
@@ -665,9 +673,7 @@ async function logout(discard=false) {
   try{
     await Promise.allSettled([...pendingWrites,...(savingPromise?[savingPromise]:[])]);
     await api('/api/logout',{method:'POST',body:{}});
-    user=null;csrfToken='';clearLocalEdits();
-    try{acceptRemote(await api('/api/state'));}catch{if(serverState)acceptRemote(serverState);}
-    renderAuth();switchView('ledger');saveStatus('浏览模式');toast('已退出登录');
+    sealPrivateView();toast('已退出登录');
   }catch(error){showError('logout-error',error.message);if(!$('logout-dialog').open)$('logout-dialog').showModal();}
   finally{quitting=false;$('logout-discard').disabled=false;updateExpenseControls();}
 }
@@ -683,7 +689,13 @@ $('auth-button').addEventListener('click',()=>{if(!user)openLogin();else logout(
 $('logout-discard').addEventListener('click',()=>logout(true));
 $('login-form').addEventListener('submit',async event=> {
   event.preventDefault();const form=event.currentTarget;const button=form.querySelector('[type="submit"]');button.disabled=true;showError('login-error','');
-  try {const values=Object.fromEntries(new FormData(form));const result=await api('/api/login',{method:'POST',body:values});user=result.user;csrfToken=result.csrfToken;renderAuth();if(contentLoaded){$('content-load-error').hidden=true;$('retry-content').hidden=false;}$('login-dialog').close();form.reset();toast(`欢迎回来，${user.username}`);saveStatus('已登录 · 可编辑');const remote=await api('/api/state');if(dirty.size||invalidInputs.size||recovery){receiveConflict(remote);openDraftRecovery();}else acceptRemote(remote);}
+  try {
+    const values=Object.fromEntries(new FormData(form));
+    const result=await api('/api/login',{method:'POST',body:values});
+    authGeneration++;user=result.user;csrfToken=result.csrfToken;
+    await loadPrivateData();$('login-dialog').close();form.reset();
+    toast(`欢迎回来，${user.username}`);saveStatus('全部修改已保存');
+  }
   catch(error){if($('login-dialog').open)showError('login-error',error.message);else showError('global-error',error.message);}
   finally{button.disabled=false;}
 });
@@ -880,17 +892,7 @@ function openAccountEditor(account) {
   updateAccountEditNote();$('account-dialog').showModal();
 }
 function accountSessionEnded() {
-  user=null;csrfToken='';accounts=[];accountListGeneration++;
-  clearTimeout(saveTimer);editedForms.clear();dirty.clear();revisions.clear();invalidInputs.clear();recovery=null;pendingRemote=null;saveFailed=false;
-  pendingLeave=null;participantDraft.clear();participantExpenseId=null;editExpenseId=null;
-  memberAvatarGeneration++;memberAvatarUploading=false;memberSaving=false;memberAvatarDraft='';editMemberId=null;
-  ['account-dialog','member-dialog','expense-dialog','participants-dialog','reset-bill-dialog','content-leave-dialog','detail-dialog'].forEach(id=>{if($(id).open)$(id).close();});
-  ['account-form','account-edit-form','member-form','member-edit-form','expense-edit-form','participants-form','login-form'].forEach(id=>$(id).reset());
-  $('detail-content').innerHTML='';detailMemberId=null;$('participants-list').innerHTML='';
-  $('member-avatar-preview').innerHTML='';$('member-avatar-input').value='';
-  contentSaving=false;resetContentDraft();resetAuditLogs();showError('admin-error','');showError('global-error','');
-  renderAuth();renderExpenses();switchView('ledger');saveStatus('浏览模式');
-  toast('账户已更新。请使用最新用户名和原密码重新登录。');
+  sealPrivateView();toast('账户已更新。请使用最新用户名和原密码重新登录。');
 }
 $('account-edit-form').addEventListener('input',updateAccountEditNote);
 $('account-edit-form').addEventListener('change',updateAccountEditNote);
@@ -954,7 +956,7 @@ async function loadSessions(){
   catch(error){showError('sessions-error',error.message);}finally{$('sessions-refresh').disabled=false;}
 }
 async function finishSecurityLogout(message){
-  user=null;csrfToken='';clearLocalEdits();try{acceptRemote(await api('/api/state'));}catch{if(serverState)acceptRemote(serverState);}renderAuth();switchView('ledger');saveStatus('浏览模式');toast(message);
+  sealPrivateView();toast(message);
 }
 $('sync-refresh').addEventListener('click',()=>syncRemote(true));$('review-update').addEventListener('click',openDraftRecovery);
 $('draft-use-server').addEventListener('click',()=>$('draft-list').querySelectorAll('[data-restore-draft]').forEach(input=>input.checked=false));
@@ -1002,23 +1004,42 @@ $('sessions-list').addEventListener('click',async event=>{const button=event.tar
 $('sessions-revoke-all').addEventListener('click',async()=>{if(!user||!confirm('确认退出该账号的全部设备（包括当前设备）？'))return;try{await flushSaves();if(invalidInputs.size)throw new Error('请先修正金额，或使用右上角退出并放弃修改。');await api('/api/account/sessions/revoke-all',{method:'POST',body:{}});await finishSecurityLogout('该账号的全部设备已退出。');}catch(error){showError('sessions-error',error.message);}});
 document.addEventListener('click',event=>{const reset=event.target.closest('[data-reset-form]');if(!reset)return;const id=reset.dataset.resetForm;editedForms.delete(id);$(id).reset();toast('已清空未提交的表单输入');});
 document.addEventListener('input',event=>{const form=event.target.closest('form');if(form&&['member-form','expense-edit-form'].includes(form.id))editedForms.add(form.id);});
+window.addEventListener('pageshow',event=>{if(event.persisted)init();});
 window.addEventListener('focus',()=>syncRemote());document.addEventListener('visibilitychange',()=>{if(!document.hidden)syncRemote();});
 setInterval(()=>syncRemote(),5000);
 
 window.addEventListener('beforeunload',event=>{if(editedForms.size||recovery||dirty.size||savingPromise||invalidInputs.size||pageContentDirty()||contentUploads.size||contentSaving){event.preventDefault();event.returnValue='';}});
 window.addEventListener('online',()=>{if(user&&dirty.size)flushSaves().catch(()=>{});});
 
+function sealPrivateView() {
+  authGeneration++;user=null;csrfToken='';
+  clearLocalEdits();closeAccountEditor();resetAuditLogs();accountListGeneration++;
+  state=null;serverState=null;ledger=null;accounts=[];lastSyncAt=null;syncError='';
+  participantDraft.clear();expenseEditorDraft.clear();detailMemberId=null;
+  content=copyContent(DEFAULT_CONTENT);contentDraft=copyContent(DEFAULT_CONTENT);contentLoaded=false;contentConflict=null;
+  ['people-grid','expense-grid','admin-members','admin-accounts','detail-content','participants-list','expense-participant-list','draft-list','sessions-list','advance-list','settlement-plan','settlement-summary','member-avatar-preview'].forEach(id=>$(id).innerHTML='');
+  ['member-edit-form','account-form','account-edit-form','login-form','content-form','participants-form'].forEach(id=>$(id).reset());
+  $('member-avatar-input').value='';$('advance-form').elements.expenseId.innerHTML='';$('advance-form').elements.memberId.innerHTML='';
+  ['hero-total','bar-total','bar-allocated','balance-difference','participants-heading','participants-remainder','reset-password-description','reset-bill-summary','advance-capacity'].forEach(id=>$(id).textContent='');
+  $('content-load-error').hidden=true;$('settlement-section').hidden=true;$('people-section').hidden=true;
+  applyContent();renderContentEditor();renderAuth();switchView(currentView==='releases'?'releases':'ledger');saveStatus('请登录查看账单');
+}
+async function loadPrivateData() {
+  const generation=authGeneration;
+  const [remote,page]=await Promise.all([api('/api/state'),api('/api/content')]);
+  if(generation!==authGeneration||!user)return;
+  content=copyContent(page);contentDraft=copyContent(page);contentLoaded=true;
+  applyContent();renderContentEditor();acceptRemote(remote);renderAuth();
+  $('content-load-error').hidden=true;showError('global-error','');
+}
+$('access-login').addEventListener('click',openLogin);
 async function init(){
-  applyContent(); renderContentEditor();
-  const results = await Promise.allSettled([api('/api/state'),api('/api/session'),api('/api/content')]);
-  if(results[2].status==='fulfilled') {
-    content=copyContent(results[2].value);contentDraft=copyContent(content);contentLoaded=true;applyContent();renderContentEditor();
-  } else contentLoadError(results[2].reason.message);
+  sealPrivateView();
   try {
-    if(results[0].status==='rejected')throw results[0].reason;
-    if(results[1].status==='rejected')throw results[1].reason;
-    state=results[0].value;serverState=structuredClone(state);lastSyncAt=new Date();user=results[1].value.user;csrfToken=results[1].value.csrfToken||'';
-    renderAuth();renderExpenses();renderSync();saveStatus(user?'全部修改已保存':'浏览模式');
-  } catch(error){showError('global-error',error.message);saveStatus('加载失败','error');$('people-grid').innerHTML='<div class="loading-card">账单暂未加载，请刷新页面重试。</div>';$('expense-grid').innerHTML='';}
+    const session=await api('/api/session');
+    if(!session.user)return;
+    authGeneration++;user=session.user;csrfToken=session.csrfToken||'';
+    await loadPrivateData();saveStatus('全部修改已保存');
+  } catch(error){sealPrivateView();showError('access-error',error.message);}
 }
 init();
